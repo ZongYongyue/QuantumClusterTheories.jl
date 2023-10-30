@@ -2,7 +2,7 @@
 
 julia_version = "1.8.2"
 manifest_format = "2.0"
-project_hash = "2e809920b4495e6d88a0ac8597f6b41aba89115d"
+project_hash = "e556ea7da8783e68ab5f2e7f62e58caf01e5c62e"
 
 [[deps.Adapt]]
 deps = ["LinearAlgebra", "Requires"]
@@ -80,7 +80,7 @@ version = "1.6.0"
 
 [[deps.ExactDiagonalization]]
 deps = ["Arpack", "KrylovKit", "LinearAlgebra", "Printf", "QuantumLattices", "SparseArrays"]
-path = "/Users/tzung/Library/Mobile Documents/com~apple~CloudDocs/Clone/Bro-Gu/ExactDiagonalization.jl/"
+path = "/Users/tzung/Library/Mobile Documents/com~apple~CloudDocs/Clone/Bro-Gu/ExactDiagonalization.jl"
 uuid = "52dcaa32-6da7-11e9-20ef-755843cf72eb"
 version = "0.1.6"
 
