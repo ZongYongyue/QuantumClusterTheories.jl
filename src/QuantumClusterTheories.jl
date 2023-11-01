@@ -8,7 +8,7 @@ using Distributed
 using Serialization
 using TimerOutputs
 
-export VCA, singleParticleGreenFunction, clusterspectrum, spectrum, GrandPotential, Optimal, optimals, OrderParameters
+export VCA, origiQuadraticTerms!, referQuadraticTerms,  seqs, singleParticleGreenFunction, clusterspectrum, spectrum, GrandPotential, Optimal, optimals, OrderParameters
 export antiferro, belongs, moirephase, spinrotation, dx2y2, es, dxy, saveData, loadData, spawn
 
 #colorbar = cgrad(:linear_tritanopic_krjcw_5_98_c46_n256, rev = true)
@@ -53,15 +53,17 @@ function VCA(sym::Symbol, unitcell::AbstractLattice, cluster::AbstractLattice, h
 end
 
 function origiQuadraticTerms!(normal::Bool, om::AbstractMatrix, oops::AbstractVector, oopsseqs::AbstractVector,k::AbstractVector)
-    pm = copy(om)
+    !normal&&(pm = copy(om))
     for i in eachindex(oops)
         seq₁, seq₂, n₁, n₂ = oopsseqs[i][1], oopsseqs[i][2], oopsseqs[i][3], oopsseqs[i][4]
         phase₁, phase₂ = exp(im*dot(k, icoordinate(oops[i]))), exp(-im*dot(k, icoordinate(oops[i])))
-        n₁==2&&n₂==1 ? (om[seq₁, seq₂]+=oops[i].value*phase₁) : (n₁==2&&n₂==2 ? (om[seq₁, seq₂]+=oops[i].value*phase₁) : (om[seq₁, seq₂]+=oops[i].value*phase₂))
-        (n₁==2&&n₂==1) ? (pm[seq₁, seq₂] += oops[i].value*phase₂) : pm[seq₁, seq₂]=pm[seq₁, seq₂]
+        om[seq₁, seq₂] += oops[i].value*phase₁
+        !normal&&(n₁==2&&n₂==1)&&(pm[seq₁, seq₂] += oops[i].value*phase₂)
     end
     if !normal
-        om[Vector((size(om,1)÷2+1):size(om,1)), Vector((size(om,1)÷2+1):size(om,1))] = -transpose(pm[Vector(1:(size(om,1)÷2)), Vector(1:(size(om,1)÷2))])
+        om[Vector(1:(size(om,1)÷2)), Vector(1:(size(om,1)÷2))] = om[Vector(1:(size(om,1)÷2)), Vector(1:(size(om,1)÷2))]/2
+        om[Vector((size(om,1)÷2+1):size(om,1)), Vector((size(om,1)÷2+1):size(om,1))] = -transpose(pm[Vector(1:(size(om,1)÷2)), Vector(1:(size(om,1)÷2))])/2
+        om = 2om
     end
     return om
 end
@@ -70,17 +72,19 @@ function referQuadraticTerms(normal::Bool, rops::AbstractVector, rm::AbstractMat
     for rop in rops 
         rop[1].index.iid.nambu==2 ? seq₁=table[rop[1].index'] : seq₁=(table[rop[1].index]+length(table))
         rop[2].index.iid.nambu==1 ? seq₂=table[rop[2].index] : seq₂=(table[rop[2].index']+length(table))
-        rop[1].index.iid.nambu==2&&rop[2].index.iid.nambu==1 ? (rm[seq₁, seq₂] += rop.value) : (rop[2].index.iid.nambu==2 ? (rm[seq₁, seq₂] += rop.value) : (rm[seq₁, seq₂] += rop.value))
+        rm[seq₁, seq₂] += rop.value
     end
     if !normal
+        rm[Vector(1:length(table)),Vector(1:length(table))] = rm[Vector(1:length(table)),Vector(1:length(table))]/2
         rm[Vector(length(table)+1:2*length(table)),Vector(length(table)+1:2*length(table))] = -transpose(rm[Vector(1:length(table)),Vector(1:length(table))])
+        rm = 2rm
     end
     return rm
 end
 
 function seqs(oops::AbstractVector, table::Table)
     seqs = [zeros(Int, 2) for _ in 1:length(oops)]
-    for i in eachindex(oops) 
+    for i in eachindex(oops)
         oops[i][1].index.iid.nambu==2 ? seq₁=table[oops[i][1].index'] : seq₁=(table[oops[i][1].index]+length(table))
         oops[i][2].index.iid.nambu==1 ? seq₂=table[oops[i][2].index] : seq₂=(table[oops[i][2].index']+length(table))
         seqs[i] = [seq₁, seq₂, oops[i][1].index.iid.nambu, oops[i][2].index.iid.nambu]
@@ -93,13 +97,18 @@ function CPTcore(cgfm::AbstractMatrix, vm::AbstractMatrix)
     return cgfm*inv(mul!(result, vm, cgfm, -1, 1))
 end
 
-function periodization(coeff::Tuple, gfml::AbstractMatrix, map₂::AbstractVector, coordinates::AbstractMatrix, k::AbstractVector)
-    (x, y), N, L = coeff, length(map₂), size(coordinates,2)
-    lgfm, pgfm =Matrix{ComplexF64}(undef, L, L), Matrix{ComplexF64}(undef, N, N)
+function periodmatrix(coordinates::AbstractMatrix, k::AbstractVector)
+    L = size(coordinates,2)
+    pm = Matrix{ComplexF64}(undef, L, L)
     for i in 1:L, j in 1:L
         @views ra, rb = coordinates[:, i], coordinates[:, j]
-        lgfm[i, j] = gfml[i,j]*exp(-im*dot(k, (x*ra - y*rb)))
+        pm[i, j] = exp(-im*dot(k, (ra - rb)))
     end
+    return pm
+end
+
+function periodsum(map₂::AbstractVector, lgfm::AbstractMatrix, N::Int, L::Int)
+    pgfm = Matrix{ComplexF64}(undef, N, N)
     for m in 1:N, n in 1:N
         @views cmap₂, hmap₂ = map₂[m], map₂[n]
         pgfm[m, n] = (N/L)*sum(lgfm[cmap₂, hmap₂])
@@ -107,39 +116,39 @@ function periodization(coeff::Tuple, gfml::AbstractMatrix, map₂::AbstractVecto
     return pgfm
 end
 
-function perGreenFunction(coeff::Tuple, GFm::AbstractMatrix, k::AbstractVector, perioder::Perioder, cluster::AbstractLattice)
-    gfv = Vector{Matrix{ComplexF64}}(undef, length(perioder.channels))
-    gfm = Matrix{ComplexF64}(undef, length(perioder.map₁)*length(perioder.map₂), length(perioder.map₁)*length(perioder.map₂))
-    for i in eachindex(perioder.channels)
-        gfml = GFm[perioder.map₁[perioder.channels[i][1]...], perioder.map₁[perioder.channels[i][2]...]]
-        gfv[i] = periodization(coeff, gfml, perioder.map₂, cluster.coordinates, k)
-    end
-    gfmm = reshape(gfv, (length(perioder.map₁), length(perioder.map₁)))
-    for i in 1:length(perioder.map₁), j in 1:length(perioder.map₁)
-        for u in 1:length(perioder.map₂), v in 1:length(perioder.map₂)
-            gfm[(i-1)*length(perioder.map₂) + u, (j-1)*length(perioder.map₂) + v] = gfmm[i, j][u, v]
+function reshapematrix(N₁, N₂, gfv)
+    gfm = Matrix{ComplexF64}(undef, N₁*N₂,  N₁*N₂)
+    gfmm = reshape(gfv, (N₁, N₁))
+    for i in 1:N₁, j in 1:N₁
+        for u in 1:N₂, v in 1:N₂
+            gfm[(i-1)*N₂ + u, (j-1)*N₂ + v] = gfmm[i, j][u, v]
         end
     end
     return gfm
 end
 
+function perGreenFunction(normal::Bool, GFm::AbstractMatrix, k::AbstractVector, perioder::Perioder, cluster::AbstractLattice)
+    N₁, N₂, P = length(perioder.map₁), length(perioder.map₂), size(GFm, 1)÷2
+    normal ? (V = 1) : (V = 4)
+    normal ? (bgfv = [GFm]) : (bgfv = [GFm[1:P,1:P], GFm[1:P,(P+1):2P], GFm[(P+1):2P, 1:P], GFm[(P+1):2P, (P+1):2P]])
+    gfvs = [Vector{Matrix{ComplexF64}}(undef, length(perioder.channels)) for _ in 1:V]
+    pm = periodmatrix(cluster.coordinates, k)
+    for i in 1:V
+        for j in eachindex(perioder.channels)
+            gfvs[i][j] = periodsum(perioder.map₂, bgfv[i][perioder.map₁[perioder.channels[j][1]...], perioder.map₁[perioder.channels[j][2]...]].*pm, N₂, size(cluster.coordinates,2))
+        end
+    end
+    gfmv = [reshapematrix(N₁, N₂, gfv) for gfv in gfvs]
+    normal ? (gfm = gfmv[1]) : (gfm = [gfmv[1] gfmv[2]; gfmv[3] gfmv[4]])
+    return gfm
+end
+
 function GreenFunctionPath(normal::Bool, om::AbstractMatrix, oops::AbstractVector, oopsseqs::AbstractVector, rm::AbstractMatrix, perioder::Perioder, cluster::AbstractLattice, k_path::ReciprocalSpace, CGFm::AbstractMatrix)
     gfpath = Vector{Matrix{ComplexF64}}(undef, length(k_path))
-    if normal
-        for i in eachindex(k_path)
-            dest = copy(om)
-            Vm = origiQuadraticTerms!(normal, dest, oops, oopsseqs, k_path[i]) - rm
-            gfpath[i] = perGreenFunction((1, 1), CPTcore(CGFm, Vm), k_path[i], perioder, cluster)
-        end
-    else
-        #coeffs, arrs = [(1, 1), (1, -1), (-1, 1), (-1, -1)], [[1:(size(om,1)÷2), 1:(size(om,1)÷2)], [1:(size(om,1)÷2), ((size(om,1)÷2)+1):(size(om,1))], [((size(om,1)÷2)+1):(size(om,1)), 1:(size(om,1)÷2)], [((size(om,1)÷2)+1):(size(om,1)), ((size(om,1)÷2)+1):(size(om,1))]]
-        for i in eachindex(k_path)
-            dest = copy(om)
-            Vm = origiQuadraticTerms!(normal, dest, oops, oopsseqs, k_path[i]) - rm
-            GFm = CPTcore(CGFm, Vm)
-            #a, b, c, d = [perGreenFunction(coeffs[i], GFm[arrs[i]...], k_path[i], perioder, cluster) for i in 1:4]
-            gfpath[i] = GFm#[a b; c d]
-        end
+    for i in eachindex(k_path)
+        dest = copy(om)
+        Vm = origiQuadraticTerms!(normal, dest, oops, oopsseqs, k_path[i]) - rm
+        gfpath[i] = perGreenFunction(normal, CPTcore(CGFm, Vm), k_path[i], perioder, cluster)
     end
     return gfpath
 end 

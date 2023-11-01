@@ -12,7 +12,7 @@ t = Hopping(:t, -1.0, 1)
 U = Hubbard(:U, 8.0)
 μ = Onsite(:μ, 1.2)
 coupling1=Coupling(Index(:, FID(1, 1//2, 1)), Index(:, FID(1, -1//2, 1)))
-coupling2=Coupling(Index(:, FID(1, 1//2, 1)), Index(:, FID(1, -1//2, 1)))-Coupling(Index(:, FID(1, -1//2, 1)), Index(:, FID(1, 1//2, 1)))
+coupling2=(Coupling(Index(:, FID(1, 1//2, 1)), Index(:, FID(1, -1//2, 1)))-Coupling(Index(:, FID(1, -1//2, 1)), Index(:, FID(1, 1//2, 1))))/4
 origiterms = (t, U, μ)
 neighbors = Neighbors(0=>0.0, 1=>1.0, 2=>√2)
 
@@ -36,20 +36,22 @@ rz = ReciprocalZone(reciprocals(cluster.vectors); length=100)
 
 spawn(8)
 
-@time vcas1 = pmap(param -> VCA(:A, unitcell, cluster, hilbert, origiterms, referterms1, bs, param; neighbors=neighbors, m=200), varparams1)
-@time gps1 = pmap(vca -> GrandPotential(:f, vca, rz, 0.0), vcas1)
+#@time vcas1 = pmap(param -> VCA(:A, unitcell, cluster, hilbert, origiterms, referterms1, bs, param; neighbors=neighbors, m=200), varparams1)
+#@time gps1 = pmap(vca -> GrandPotential(:f, vca, rz, 0.0), vcas1)
+
 
 @time vcas2 = pmap(param -> VCA(:A, unitcell, cluster, hilbert, origiterms, referterms2, bs, param; neighbors=neighbors, m=200), varparams2)
 @time gps2 = pmap(vca -> GrandPotential(:f, vca, rz, 0.0), vcas2)
 
-@time vcas3 = pmap(param -> VCA(:A, unitcell, cluster, hilbert, origiterms, referterms3, bs, param; neighbors=neighbors, m=200), varparams3)
-@time gps3 = pmap(vca -> GrandPotential(:f, vca, rz, 0.0), vcas3)
+
+#@time vcas3 = pmap(param -> VCA(:A, unitcell, cluster, hilbert, origiterms, referterms3, bs, param; neighbors=neighbors, m=200), varparams3)
+#@time gps3 = pmap(vca -> GrandPotential(:f, vca, rz, 0.0), vcas3)
 
 
-@time vcas4 = pmap(param -> VCA(:A, unitcell, cluster, hilbert, origiterms, referterms4, bs, param; neighbors=neighbors, m=200), varparams4)
-@time gps4 = pmap(vca -> GrandPotential(:f, vca, rz, 0.0), vcas4)
+#@time vcas4 = pmap(param -> VCA(:A, unitcell, cluster, hilbert, origiterms, referterms4, bs, param; neighbors=neighbors, m=200), varparams4)
+#@time gps4 = pmap(vca -> GrandPotential(:f, vca, rz, 0.0), vcas4)
 
-f1 = plot(range(0, 0.2, 20), gps1 .- gps1[1], label=nothing,legend=:topright, title="Ω-Ω₀ vs M")
+#f1 = plot(range(0, 0.2, 20), gps1 .- gps1[1], label=nothing,legend=:topright, title="Ω-Ω₀ vs M")
 f2 = plot(range(0, 0.2, 20), gps2 .- gps2[1], label=nothing,legend=:topright, title="Ω-Ω₀ vs M")
-f3 = plot(range(0, 0.2, 20), gps3 .- gps3[1], label=nothing,legend=:topright, title="Ω-Ω₀ vs M")
-f4 = plot(range(0, 0.2, 20), gps4 .- gps4[1], label=nothing,legend=:topright, title="Ω-Ω₀ vs M")
+#f3 = plot(range(0, 0.2, 20), gps3 .- gps3[1], label=nothing,legend=:topright, title="Ω-Ω₀ vs M")
+#f4 = plot(range(0, 0.2, 20), gps4 .- gps4[1], label=nothing,legend=:topright, title="Ω-Ω₀ vs M")

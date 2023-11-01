@@ -5,11 +5,8 @@ using Plots
 using Distributed
 colorbar = cgrad(:linear_tritanopic_krjcw_5_98_c46_n256, rev = true)
 
-cell = Lattice([0, 0]; vectors=[[1, 0]])
-unitcell = Lattice(cell, (4,), ('p',))
-cluster = Lattice(cell, (4,), ('p',))
-#unitcell = Lattice([0, 0]; vectors=[[1, 0]])
-#cluster = Lattice(unitcell, (4,), ('p',))
+unitcell = Lattice([0, 0]; vectors=[[1, 0]])
+cluster = Lattice(unitcell, (4,), ('p',))
 hilbert = Hilbert(site=>Fock{:f}(1, 2) for site=1:length(cluster))
 bs = BinaryBases([1:4,5:8], 0.0)
 #bs = BinaryBases(8)
@@ -20,14 +17,14 @@ function px(bond::Bond)
     any(≈(θ),(0, 2π)) && return 1.0
     any(≈(θ),(π,)) && return -1.0
 end
-p = Pairing(:p, 1.0, 1, coupling; amplitude=px)
-μ = Onsite(:μ, 0.0)
+p = Pairing(:p, 0.2, 1, coupling/2; amplitude=px)
+μ = Onsite(:μ, 0.5)
 origiterms = (t, μ, p)
 referterms = (t, μ, p)
 neighbors = Neighbors(0=>0.0, 1=>1.0)
 @time vca = VCA(:A, unitcell, cluster, hilbert, origiterms, referterms, bs)
 k_path = ReciprocalPath(reciprocals(unitcell.vectors), line"X₂-Γ-X", length=300)
-ω_range = range(-3.0, 3.0, length=400)
+ω_range = range(-3, 3, length=400)
 fq = ω_range .+ (0.05*im)
 @time G = singleParticleGreenFunction(:f, vca, k_path, fq)
 A = spectrum(G)
