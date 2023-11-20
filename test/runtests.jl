@@ -1,6 +1,6 @@
-using QuantumClusterTheories
 using Test
+using SafeTestsets
 
-@testset "QuantumClusterTheories.jl" begin
-    # Write your tests here.
+@safetestset "QuantumClusterTheories" begin
+    include("QuantumClusterTheories.jl")
 end
