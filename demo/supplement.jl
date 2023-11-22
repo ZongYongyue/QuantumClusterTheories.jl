@@ -2,6 +2,7 @@ using QuantumLattices
 using QuantumClusterTheories
 using ExactDiagonalization
 using LinearAlgebra
+using Serialization
 """
     ExactNormalGreenFunction(t, μ, k, ω; η=0.05)
     ExactSWaveGreenFunction(t, Δ, μ, ϕ, k, ω; η=0.05)

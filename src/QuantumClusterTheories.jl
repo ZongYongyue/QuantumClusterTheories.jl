@@ -5,10 +5,11 @@ using LinearAlgebra
 using QuadGK
 using QuantumLattices
 using Distributed
-using Serialization
 using TimerOutputs
 
-export VCA, singleParticleGreenFunction, spectrum, GrandPotential, Optimal, optimals, OrderParameters
+import QuantumLattices: update, update!
+
+export VCA, singleParticleGreenFunction, spectrum, GrandPotential
 
 const vcatimer = TimerOutput()
 """
@@ -46,32 +47,39 @@ end
 
 Variational Cluster Approach(VCA) method for a quantum lattice system.
 """
-struct VCA{L<:AbstractLattice, G<:EDSolver, P<:Perioder} <: Frontend
-    unitcell::L
-    cluster::L
-    origigenerator::OperatorGenerator
-    refergenerator::OperatorGenerator
+mutable struct VCA{L<:AbstractLattice, G<:EDSolver, P<:Perioder, T<:Partition} <: Frontend
+    const unitcell::L
+    const cluster::L
+    const origigenerator::OperatorGenerator
+    const refergenerator::OperatorGenerator
     solver::G
-    perioder::P
+    const perioder::P
+    const parts::T
 end
 
 """
-    VCA(sym::Symbol, unitcell::AbstractLattice, cluster::AbstractLattice, hilbert::Hilbert, origiterms::Tuple{Vararg{Term}}, referterms::Tuple{Vararg{Term}}, bs::BinaryBases, rparam::Union{Parameters, Nothing}=nothing;neighbors::Union{Nothing, Int, Neighbors}=nothing, m::Int=200)
+    VCA(sym::Symbol, unitcell::AbstractLattice, cluster::AbstractLattice, hilbert::Hilbert, origiterms::Tuple{Vararg{Term}}, referterms::Tuple{Vararg{Term}}, bs::BinaryBases; neighbors::Union{Nothing, Int, Neighbors}=nothing, m::Int=200)
 
 Construct the Variational Cluster Approach(VCA) method for a quantum lattice system with EDSolver.
 """
-function VCA(sym::Symbol, unitcell::AbstractLattice, cluster::AbstractLattice, hilbert::Hilbert, origiterms::Tuple{Vararg{Term}}, referterms::Tuple{Vararg{Term}}, bs::BinaryBases, rparam::Union{Parameters, Nothing}=nothing;neighbors::Union{Nothing, Int, Neighbors}=nothing, m::Int=200)
+function VCA(sym::Symbol, unitcell::AbstractLattice, cluster::AbstractLattice, hilbert::Hilbert, origiterms::Tuple{Vararg{Term}}, referterms::Tuple{Vararg{Term}}, bs::BinaryBases; neighbors::Union{Nothing, Int, Neighbors}=nothing, m::Int=200)
     table = Table(hilbert, Metric(EDKind(hilbert), hilbert))
     isnothing(neighbors) && (neighbors = maximum(term->term.bondkind, origiterms))
     origibonds = bonds(cluster, neighbors)
     referbonds = filter(bond -> isintracell(bond), origibonds)
+    perioder = Perioder(unitcell, cluster, table)  
+    parts = Partition(sym, table, bs)
     origigenerator, refergenerator = OperatorGenerator(origiterms, origibonds, hilbert; table = table), OperatorGenerator(referterms, referbonds, hilbert; table = table)
-    isnothing(rparam) || update!(refergenerator; rparam...)
-    edsolver = EDSolver(EDKind(hilbert), sym, refergenerator, bs, table; m = m)
-    perioder = Perioder(unitcell, cluster, table)         
-    return VCA(unitcell, cluster, origigenerator, refergenerator, edsolver, perioder)
+    edsolver = EDSolver(EDKind(hilbert), parts, refergenerator, bs, table; m = m)
+    return VCA(unitcell, cluster, origigenerator, refergenerator, edsolver, perioder, parts)
 end
-
+function update!(vca::VCA, oparams::Parameters, rparams::Parameters)
+    update!(vca.origigenerator; oparams...)
+    update!(vca.refergenerator; rparams...)
+    vca.solver = EDSolver(EDKind(vca.refergenerator.hilbert), vca.parts, vca.refergenerator, vca.parts.sector, vca.refergenerator.table; m = length(vca.solver.lvals[1].abc[1][1]))
+    return vca
+    end
+end
 """
     origiQuadraticTerms!(normal::Bool, om::AbstractMatrix, oops::AbstractVector, oopsseqs::AbstractVector,k::AbstractVector)
 
@@ -272,11 +280,18 @@ function GrandPotential(sym::Symbol, vca::VCA, bz::AbstractVector, μ::Real)
     for i in eachindex(bz)
         vmvec[i] = (origiQuadraticTerms!(R, zeros(ComplexF64, N, N), oops, oopsseqs, bz[i]) - rm)
     end
-    trvm = sum([tr(vmv) for vmv in vmvec])
+    N ? (trvm = sum([tr(vmv) for vmv in vmvec])) : (trvm = sum([tr(vmv[1:N÷2,1:N÷2]) - tr(vmv[N÷2+1:N,N÷2+1:N]) for vmv in vmvec]))
     gp = (vca.solver.gse + (1/length(bz))*(- quadgk(x -> GPintegrand(R, sym, vca.solver, Matrix{ComplexF64}(I, N, N), vmvec, x*im+μ), 0, Inf)[1]/π + trvm.re/2))/length(vca.cluster)/length(vca.unitcell)
     return gp
 end
 
+"""
+Grand potential as a function of varparams.
+"""
+function GrandPotential(oparams::Parameters, rparams::Parameters, sym::Symbol, vca::VCA, bz::AbstractVector, μ::Real)
+    update!(vca, oparams, rparams)
+    return GrandPotential(sym, vca, bz, μ) 
+end
 """
     Optimal{T<:VCA, P<:Parameters}
 
@@ -299,8 +314,7 @@ function optimals(vcas::AbstractArray{<:VCA}, gps::AbstractArray{<:Real},varpara
     if ndims(varparams)==2
         opts = Vector{Optimal}(undef, size(varparams, 1))
         for i in axes(varparams,1)
-            Δgps = gps[i,:] .- maximum(gps[i,:])
-            index = argmin(Δgps)
+            index = argmin(gps[i,:])
             opts[i] = Optimal(vcas[i, index], varparams[i, index])
         end
         return opts
@@ -339,7 +353,7 @@ function OrderParameters(sym::Symbol, opt::Optimal, hilbert::Hilbert, bz::Recipr
     oops = filter(op -> length(op) == 2, collect(expand(vca.origigenerator)))
     oopsseqs = seqs(oops, vca.origigenerator.table)
     rm = referQuadraticTerms(R, rops, zeros(ComplexF64, N, N), vca.refergenerator.table)
-    return abs((1/length(bz))*quadgk(x -> OPintegrand(normal, sym, vca, bz, x*im, sm, oops, oopsseqs, rm, μ), 0, Inf)[1]/π/length(vca.unitcell)/length(vca.cluster))
+    return abs((1/length(bz))*quadgk(x -> OPintegrand(R, sym, vca, bz, x*im, sm, oops, oopsseqs, rm, μ), 0, Inf)[1]/π/length(vca.unitcell)/length(vca.cluster))
 end
 
 end #module
