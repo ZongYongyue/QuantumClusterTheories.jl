@@ -9,7 +9,7 @@ using TimerOutputs
 
 import QuantumLattices: update, update!
 
-export VCA, singleParticleGreenFunction, spectrum, GrandPotential
+export VCA, singleParticleGreenFunction, spectrum, GrandPotential, OrderParameters
 
 const vcatimer = TimerOutput()
 """
@@ -78,7 +78,6 @@ function update!(vca::VCA, oparams::Parameters, rparams::Parameters)
     update!(vca.refergenerator; rparams...)
     vca.solver = EDSolver(EDKind(vca.refergenerator.hilbert), vca.parts, vca.refergenerator, vca.parts.sector, vca.refergenerator.table; m = length(vca.solver.lvals[1].abc[1][1]))
     return vca
-    end
 end
 """
     origiQuadraticTerms!(normal::Bool, om::AbstractMatrix, oops::AbstractVector, oopsseqs::AbstractVector,k::AbstractVector)
@@ -280,7 +279,7 @@ function GrandPotential(sym::Symbol, vca::VCA, bz::AbstractVector, μ::Real)
     for i in eachindex(bz)
         vmvec[i] = (origiQuadraticTerms!(R, zeros(ComplexF64, N, N), oops, oopsseqs, bz[i]) - rm)
     end
-    N ? (trvm = sum([tr(vmv) for vmv in vmvec])) : (trvm = sum([tr(vmv[1:N÷2,1:N÷2]) - tr(vmv[N÷2+1:N,N÷2+1:N]) for vmv in vmvec]))
+    R ? (trvm = sum([tr(vmv) for vmv in vmvec])) : (trvm = sum([tr(vmv[1:N÷2,1:N÷2]) - tr(vmv[N÷2+1:N,N÷2+1:N]) for vmv in vmvec]))
     gp = (vca.solver.gse + (1/length(bz))*(- quadgk(x -> GPintegrand(R, sym, vca.solver, Matrix{ComplexF64}(I, N, N), vmvec, x*im+μ), 0, Inf)[1]/π + trvm.re/2))/length(vca.cluster)/length(vca.unitcell)
     return gp
 end
@@ -291,34 +290,6 @@ Grand potential as a function of varparams.
 function GrandPotential(oparams::Parameters, rparams::Parameters, sym::Symbol, vca::VCA, bz::AbstractVector, μ::Real)
     update!(vca, oparams, rparams)
     return GrandPotential(sym, vca, bz, μ) 
-end
-"""
-    Optimal{T<:VCA, P<:Parameters}
-
-Restore the VCA and parameters for the stationary point.
-"""
-struct Optimal{T<:VCA, P<:Parameters}
-    optvca::T
-    optparams::P
-    function Optimal(optvca::VCA, optparams::Parameters)
-        new{typeof(optvca),typeof(optparams)}(optvca, optparams)
-    end
-end
-
-"""
-    optimals(vcas::AbstractArray{<:VCA}, gps::AbstractArray{<:Real},varparams::AbstractArray{<:Parameters})
-
-Searching for stationary points.
-"""
-function optimals(vcas::AbstractArray{<:VCA}, gps::AbstractArray{<:Real},varparams::AbstractArray{<:Parameters})
-    if ndims(varparams)==2
-        opts = Vector{Optimal}(undef, size(varparams, 1))
-        for i in axes(varparams,1)
-            index = argmin(gps[i,:])
-            opts[i] = Optimal(vcas[i, index], varparams[i, index])
-        end
-        return opts
-    end
 end
 
 """
@@ -343,8 +314,8 @@ end
 
 Calculate the order parameter.
 """
-function OrderParameters(sym::Symbol, opt::Optimal, hilbert::Hilbert, bz::ReciprocalSpace, term::Term, μ::Real)
-    vca = opt.optvca
+function OrderParameters(oparams::Parameters, rparams::Parameters, sym::Symbol, vca::VCA, hilbert::Hilbert, bz::ReciprocalSpace, term::Term, μ::Real)
+    update!(vca, oparams, rparams)
     rops = filter(op -> length(op) == 2, collect(expand(vca.refergenerator)))
     R, N = isempty(filter(op -> op.id[1].index.iid.nambu==op.id[2].index.iid.nambu, collect(rops))), length(vca.refergenerator.table)
     R ? N=N : N=2*N
