@@ -62,15 +62,15 @@ end
 
 Construct the Variational Cluster Approach(VCA) method for a quantum lattice system with EDSolver.
 """
-function VCA(sym::Symbol, unitcell::AbstractLattice, cluster::AbstractLattice, hilbert::Hilbert, origiterms::Tuple{Vararg{Term}}, referterms::Tuple{Vararg{Term}}, bs::BinaryBases; neighbors::Union{Nothing, Int, Neighbors}=nothing, m::Int=200)
+function VCA(sym::Symbol, unitcell::AbstractLattice, cluster::AbstractLattice, hilbert::Hilbert, origiterms::Tuple{Vararg{Term}}, referterms::Tuple{Vararg{Term}}, quantumnumbers::Tuple{Vararg{AbelianNumber}}; neighbors::Union{Nothing, Int, Neighbors}=nothing, m::Int=200)
     table = Table(hilbert, Metric(EDKind(hilbert), hilbert))
     isnothing(neighbors) && (neighbors = maximum(term->term.bondkind, origiterms))
     origibonds = bonds(cluster, neighbors)
-    referbonds = filter(bond -> isintracell(bond), origibonds)
     perioder = Perioder(unitcell, cluster, table)  
-    parts = Partition(sym, table, bs)
-    origigenerator, refergenerator = OperatorGenerator(origiterms, origibonds, hilbert; table = table), OperatorGenerator(referterms, referbonds, hilbert; table = table)
-    edsolver = EDSolver(EDKind(hilbert), parts, refergenerator, bs, table; m = m)
+    origigenerator= OperatorGenerator(origiterms, origibonds, hilbert; table = table)
+    opencluster = Lattice([cluster.coordinates[:, i] for i in 1:size(cluster.coordinates, 2)]...; name=:opencluster) 
+    ed = ED(opencluster, hilbert, referterms, quantumnumbers; neighbors=neighbors)
+    edsolver = EDSolver(sym, ed; m = m)
     return VCA(unitcell, cluster, origigenerator, refergenerator, edsolver, perioder, parts)
 end
 function update!(vca::VCA, oparams::Parameters, rparams::Parameters)
@@ -310,7 +310,7 @@ function OPintegrand(normal::Bool, sym::Symbol, vca::VCA, bz::ReciprocalSpace, i
 end
 
 """
-    OrderParameters(sym::Symbol, opt::Optimal, hilbert::Hilbert, bz::ReciprocalSpace, term::Term, μ::Real)
+    OrderParameters(oparams::Parameters, rparams::Parameters, sym::Symbol, vca::VCA, hilbert::Hilbert, bz::ReciprocalSpace, term::Term, μ::Real)
 
 Calculate the order parameter.
 """
