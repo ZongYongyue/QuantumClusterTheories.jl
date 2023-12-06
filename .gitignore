@@ -10,3 +10,5 @@ test/*.png
 .vscode/
 
 desktop.ini
+.DS_Store
+using/

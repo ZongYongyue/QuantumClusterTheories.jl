@@ -310,7 +310,7 @@ function OPintegrand(normal::Bool, sym::Symbol, vca::VCA, bz::ReciprocalSpace, i
 end
 
 """
-    OrderParameters(sym::Symbol, opt::Optimal, hilbert::Hilbert, bz::ReciprocalSpace, term::Term, μ::Real)
+    OrderParameters(oparams::Parameters, rparams::Parameters, sym::Symbol, vca::VCA, hilbert::Hilbert, bz::ReciprocalSpace, term::Term, μ::Real)
 
 Calculate the order parameter.
 """

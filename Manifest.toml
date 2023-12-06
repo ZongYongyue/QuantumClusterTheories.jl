@@ -95,7 +95,7 @@ version = "1.6.0"
 
 [[deps.ExactDiagonalization]]
 deps = ["Arpack", "KrylovKit", "LinearAlgebra", "Printf", "QuantumLattices", "SparseArrays", "TimerOutputs"]
-path = "/Users/zongyy/Library/Mobile Documents/com~apple~CloudDocs/Clone/Fork/ExactDiagonalization.jl"
+path = "/Users/zongyy/Library/Mobile Documents/com~apple~CloudDocs/Clone/Fork/master/ExactDiagonalization.jl"
 uuid = "52dcaa32-6da7-11e9-20ef-755843cf72eb"
 version = "0.1.6"
 
