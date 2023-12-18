@@ -5,6 +5,8 @@ using LinearAlgebra
 using Serialization
 using Optim
 using Distributed
+using MoireSuperlattices
+using TightBindingApproximation
 """
     ExactNormalGreenFunction(t, μ, k, ω; η=0.05)
     ExactSWaveGreenFunction(t, Δ, μ, ϕ, k, ω; η=0.05)
@@ -305,3 +307,33 @@ function Newton(func, start, step=[1e-3 for _ in length(start)], accur=[1e-6 for
     return x, gradient, ihessian
 end
 
+function moiretuning(θ::Real, Vᶻ::Real)
+    parameters = (a₀=3.28, m=0.45, θ=θ, Vᶻ=Vᶻ, μ=8.31, V=-1.28, ψ=22.7, w=-12.9)
+    bltmd = Algorithm(:BLTMD, BLTMD(values(parameters)...; truncation=4); parameters=parameters, map=bltmdmap)
+    recipls = bltmd.frontend.reciprocallattice.translations
+    lattice = MoireTriangular(2, reciprocals(recipls))
+    brillouinzone = BrillouinZone(recipls, 24)
+    t = terms(bltmd, lattice, brillouinzone; atol=10^-6)
+    return t[1:end-1]
+end
+
+function moireSpecDens(θ::Real, Vᶻ::Real, u::Real, ω_range::AbstractVector; η::Real=0.08)
+    unitcell = Lattice([0, 0]; vectors = [[√3/2, 1/2], [0, 1]])#Lattice([0, 0]; vectors = [[1, 0], [-1/2, √3/2]])
+    cluster = Lattice([0,0],[√3/2, 1/2], [-√3/2, 1/2], [0, 1], [√3/2, 3/2], [-√3, 1], [-√3/2, 3/2], [0, 2], [√3/2, 5/2], [-√3, 2], [-√3/2, 5/2], [0, 3]; vectors = [[-√3, 3], [√3, 3]])#Lattice([0.0, 0.0], [1, 0], [-1/2, √3/2], [1/2, √3/2], [3/2, √3/2], [-1, √3], [0, √3], [1, √3], [2, √3], [-1/2, 3√3/2], [1/2, 3√3/2], [3/2, 3√3/2]; vectors = [[3, √3], [-3, √3]])
+    hilbert = Hilbert(site=>Fock{:f}(1, 2) for site=1:length(cluster))
+    bs = Sector(hilbert, ParticleNumber(12))
+    t = moiretuning(θ, Vᶻ)
+    abst = √((t[1].value)^2+(t[2].value)^2)
+    U = Hubbard(:U, abst*u)
+    origiterms = (t..., U)
+    referterms = (t..., U)
+    rz = ReciprocalZone(reciprocals(unitcell.vectors); length=100)
+    k_path = ReciprocalPath(reciprocals(unitcell.vectors), hexagon"Γ-M₂-K-Γ, 120°", length=100)
+    ω_range = real.(abst*ω_range)
+    vca = VCA(:S, unitcell, cluster, hilbert, origiterms, referterms, bs)
+    G = singleParticleGreenFunction(:f, vca, k_path, ω_range; η=η, μ=(abst*u/2).re)
+    GG = singleParticleGreenFunction(:f, vca, rz, ω_range; η=η, μ=(abst*u/2).re)
+    A = spectrum(G)
+    D = densityofstates(GG)
+    return A, D
+end

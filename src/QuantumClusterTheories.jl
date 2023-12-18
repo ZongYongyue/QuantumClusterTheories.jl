@@ -4,12 +4,15 @@ using ExactDiagonalization
 using LinearAlgebra
 using QuadGK
 using QuantumLattices
+using QuantumLattices: decimaltostr
 using Distributed
+using Serialization
 using TimerOutputs
+using Printf: @printf, @sprintf
 
 import QuantumLattices: update, update!
 
-export VCA, singleParticleGreenFunction, spectrum, GrandPotential, OrderParameters
+export VCA, singleParticleGreenFunction, spectrum, densityofstates, GrandPotential, OrderParameters
 
 const vcatimer = TimerOutput()
 """
@@ -48,6 +51,8 @@ end
 Variational Cluster Approach(VCA) method for a quantum lattice system.
 """
 mutable struct VCA{L<:AbstractLattice, G<:EDSolver, P<:Perioder, T<:Partition} <: Frontend
+    const modelname::Union{String, Nothing}
+    const cachepath::Union{String, Nothing}
     const unitcell::L
     const cluster::L
     const origigenerator::OperatorGenerator
@@ -57,26 +62,65 @@ mutable struct VCA{L<:AbstractLattice, G<:EDSolver, P<:Perioder, T<:Partition} <
     const parts::T
 end
 
+function Base.repr(gen::OperatorGenerator; ndecimal::Int=10)
+    result = String[]
+    for (name, value) in pairs(Parameters(gen))
+        push!(result, @sprintf "%s(%s)" name decimaltostr(value, ndecimal))
+    end
+    return @sprintf "%s" join(result, "")
+end
 """
     VCA(sym::Symbol, unitcell::AbstractLattice, cluster::AbstractLattice, hilbert::Hilbert, origiterms::Tuple{Vararg{Term}}, referterms::Tuple{Vararg{Term}}, bs::BinaryBases; neighbors::Union{Nothing, Int, Neighbors}=nothing, m::Int=200)
 
 Construct the Variational Cluster Approach(VCA) method for a quantum lattice system with EDSolver.
 """
-function VCA(sym::Symbol, unitcell::AbstractLattice, cluster::AbstractLattice, hilbert::Hilbert, origiterms::Tuple{Vararg{Term}}, referterms::Tuple{Vararg{Term}}, bs::BinaryBases; neighbors::Union{Nothing, Int, Neighbors}=nothing, m::Int=200)
+function VCA(sym::Symbol, unitcell::AbstractLattice, cluster::AbstractLattice, hilbert::Hilbert, origiterms::Tuple{Vararg{Term}}, referterms::Tuple{Vararg{Term}}, bs::BinaryBases; neighbors::Union{Nothing, Int, Neighbors}=nothing, m::Int=200, modelname::Union{Nothing,String}=nothing, cachepath::Union{Nothing, String}=nothing)
     table = Table(hilbert, Metric(EDKind(hilbert), hilbert))
     isnothing(neighbors) && (neighbors = maximum(term->term.bondkind, origiterms))
     origibonds = bonds(cluster, neighbors)
     referbonds = filter(bond -> isintracell(bond), origibonds)
-    perioder = Perioder(unitcell, cluster, table)  
+    perioder = Perioder(unitcell, cluster, table) 
     parts = Partition(sym, table, bs)
     origigenerator, refergenerator = OperatorGenerator(origiterms, origibonds, hilbert; table = table), OperatorGenerator(referterms, referbonds, hilbert; table = table)
-    edsolver = EDSolver(EDKind(hilbert), parts, refergenerator, bs, table; m = m)
-    return VCA(unitcell, cluster, origigenerator, refergenerator, edsolver, perioder, parts)
+    if !isnothing(cachepath)
+        modelname_str = isnothing(modelname) ? "default_model" : modelname
+        cache_file_path = joinpath(cachepath, @sprintf "%s_%s_%s_%s_%s.jls" modelname_str cluster.name repr(bs) repr(refergenerator) EDSolver )
+        if isfile(cache_file_path)
+            edsolver = deserialize(cache_file_path)
+            println("Load edsolver from $cache_file_path")
+        else
+            !isdir(cachepath)&& mkdir(cachepath)
+            println("Cache directory created at $cachepath")
+            edsolver = EDSolver(EDKind(hilbert), parts, refergenerator, bs, table; m = m)
+            serialize(cache_file_path, edsolver)
+            println("EDSolver cached at $cache_file_path")
+        end
+    else
+        edsolver = EDSolver(EDKind(hilbert), parts, refergenerator, bs, table; m = m)
+    end
+    return VCA(modelname, cachepath, unitcell, cluster, origigenerator, refergenerator, edsolver, perioder, parts)
 end
 function update!(vca::VCA, oparams::Parameters, rparams::Parameters)
     update!(vca.origigenerator; oparams...)
     update!(vca.refergenerator; rparams...)
-    vca.solver = EDSolver(EDKind(vca.refergenerator.hilbert), vca.parts, vca.refergenerator, vca.parts.sector, vca.refergenerator.table; m = length(vca.solver.lvals[1].abc[1][1]))
+    cachepath = vca.cachepath
+    modelname = vca.modelname
+    if !isnothing(cachepath)
+        modelname_str = isnothing(modelname) ? "default_model" : modelname
+        cache_file_path = joinpath(cachepath, @sprintf "%s_%s_%s_%s_%s.jls" modelname_str vca.cluster.name repr(vca.parts.sector) repr(vca.refergenerator) EDSolver )
+        if isfile(cache_file_path)
+            vca.solver = deserialize(cache_file_path)
+            println("Load edsolver from $cache_file_path")
+        else
+            !isdir(cachepath)&& mkdir(cachepath)
+            println("Cache directory created at $cachepath")
+            vca.solver = EDSolver(EDKind(vca.refergenerator.hilbert), vca.parts, vca.refergenerator, vca.parts.sector, vca.refergenerator.table; m = length(vca.solver.lvals[1].abc[1][1]))
+            serialize(cache_file_path, vca.solver)
+            println("EDSolver cached at $cache_file_path")
+        end
+    else
+        vca.solver = EDSolver(EDKind(vca.refergenerator.hilbert), vca.parts, vca.refergenerator, vca.parts.sector, vca.refergenerator.table; m = length(vca.solver.lvals[1].abc[1][1]))
+    end      
     return vca
 end
 """
@@ -208,18 +252,18 @@ function GreenFunctionPath(normal::Bool, om::AbstractMatrix, oops::AbstractVecto
 end 
 
 """
-    singleParticleGreenFunction(sym::Symbol, vca::VCA, k_path::Union{AbstractVector, ReciprocalSpace}, ω_range::Union{AbstractVector,AbstractRange}; μ::Real=0.0, η::Real=0.05)
+    singleParticleGreenFunction(sym::Symbol, vca::VCA, k_path::Union{AbstractVector, ReciprocalSpace}, ω_range::Union{AbstractVector,AbstractRange}; μ::Real=0.0, η::Real=0.05, dstr::Bool=false)
 
 The single particle Green function in k-ω space.
 """
-function singleParticleGreenFunction(sym::Symbol, vca::VCA, k_path::Union{AbstractVector, ReciprocalSpace}, ω_range::Union{AbstractVector,AbstractRange}; μ::Real=0.0, η::Real=0.05)
+function singleParticleGreenFunction(sym::Symbol, vca::VCA, k_path::Union{AbstractVector, ReciprocalSpace}, ω_range::Union{AbstractVector,AbstractRange}; μ::Real=0.0, η::Real=0.05, dstr::Bool=false)
     ω_range = ω_range .+ (μ + η*im)
     oops, rops = filter(op -> length(op) == 2, collect(expand(vca.origigenerator))), filter(op -> length(op) == 2, collect(expand(vca.refergenerator)))
     R, N = isempty(filter(op -> op.id[1].index.iid.nambu==op.id[2].index.iid.nambu, collect(rops))), length(vca.refergenerator.table)
     R ? N=N : N=2*N
     oopsseqs = seqs(oops, vca.origigenerator.table)
     rm = referQuadraticTerms(R, rops, zeros(ComplexF64, N, N), vca.refergenerator.table)
-    gfpv = [GreenFunctionPath(R, zeros(ComplexF64, N, N), oops, oopsseqs, rm, vca.perioder, vca.cluster, k_path, ClusterGreenFunction(R, sym, vca.solver, ω)) for ω in ω_range]
+    dstr ? (gfpv=pmap(ω->GreenFunctionPath(R, zeros(ComplexF64, N, N), oops, oopsseqs, rm, vca.perioder, vca.cluster, k_path, ClusterGreenFunction(R, sym, vca.solver, ω)), ω_range)) : (gfpv=[GreenFunctionPath(R, zeros(ComplexF64, N, N), oops, oopsseqs, rm, vca.perioder, vca.cluster, k_path, ClusterGreenFunction(R, sym, vca.solver, ω)) for ω in ω_range])
     return gfpv
 end
 
@@ -236,6 +280,19 @@ function spectrum(gfpathv::AbstractVector)
             end
         end
         return A
+end
+
+"""
+    Density of states
+"""
+function densityofstates(gfpathv::AbstractVector)
+    A = zeros(Float64, length(gfpathv))
+    for i in eachindex(gfpathv)
+        for j in eachindex(gfpathv[i])
+            A[i] += (-1/π) * (tr(gfpathv[i][j])).im
+        end
+    end
+    return A/length(gfpathv[1])
 end
 
 """
