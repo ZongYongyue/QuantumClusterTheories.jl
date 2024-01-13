@@ -330,7 +330,7 @@ function moireSpecDens(θ::Real, Vᶻ::Real, u::Real, ω_range::AbstractVector; 
     rz = ReciprocalZone(reciprocals(unitcell.vectors); length=100)
     k_path = ReciprocalPath(reciprocals(unitcell.vectors), hexagon"Γ-M₂-K-Γ, 120°", length=100)
     ω_range = real.(abst*ω_range)
-    vca = VCA(:S, unitcell, cluster, hilbert, origiterms, referterms, bs)
+    vca = VCA(:S, unitcell, cluster, hilbert, origiterms, referterms, bs; modelname="Moire-MIM", cachepath="/fsa/home/jxl_zongyy/data/VCA/")
     G = singleParticleGreenFunction(:f, vca, k_path, ω_range; η=η, μ=(abst*u/2).re)
     GG = singleParticleGreenFunction(:f, vca, rz, ω_range; η=η, μ=(abst*u/2).re)
     A = spectrum(G)
