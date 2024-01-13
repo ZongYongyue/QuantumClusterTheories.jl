@@ -62,7 +62,7 @@ mutable struct VCA{L<:AbstractLattice, G<:EDSolver, P<:Perioder, T<:Partition} <
     const parts::T
 end
 
-function Base.repr(gen::OperatorGenerator; ndecimal::Int=10)
+function Base.repr(gen::OperatorGenerator; ndecimal::Int=6)
     result = String[]
     for (name, value) in pairs(Parameters(gen))
         push!(result, @sprintf "%s(%s)" name decimaltostr(value, ndecimal))
@@ -84,7 +84,7 @@ function VCA(sym::Symbol, unitcell::AbstractLattice, cluster::AbstractLattice, h
     origigenerator, refergenerator = OperatorGenerator(origiterms, origibonds, hilbert; table = table), OperatorGenerator(referterms, referbonds, hilbert; table = table)
     if !isnothing(cachepath)
         modelname_str = isnothing(modelname) ? "default_model" : modelname
-        cache_file_path = joinpath(cachepath, @sprintf "%s_%s_%s_%s_%s.jls" modelname_str cluster.name repr(bs) repr(refergenerator) EDSolver )
+        cache_file_path = joinpath(cachepath, @sprintf "%s_%s_%s_%s.jls" modelname_str cluster.name repr(refergenerator) EDSolver )
         if isfile(cache_file_path)
             edsolver = deserialize(cache_file_path)
             println("Load edsolver from $cache_file_path")
@@ -272,11 +272,11 @@ end
 
 The spectrum of the single particle Green function.
 """
-function spectrum(gfpathv::AbstractVector)
+function spectrum(gfpathv::AbstractVector; select::AbstractVector=Vector(1:size(gfpathv[1][1],2)))
     A = zeros(Float64, length(gfpathv), length(gfpathv[1]))
         for i in eachindex(gfpathv)
             for j in eachindex(gfpathv[i])
-                A[i, j] = (-1/π) * (tr(gfpathv[i][j])).im
+                A[i, j] = (-1/π) * (tr(gfpathv[i][j][select, select])).im
             end
         end
         return A
@@ -285,11 +285,11 @@ end
 """
     Density of states
 """
-function densityofstates(gfpathv::AbstractVector)
+function densityofstates(gfpathv::AbstractVector; select::AbstractVector=Vector(1:size(gfpathv[1][1],2)))
     A = zeros(Float64, length(gfpathv))
     for i in eachindex(gfpathv)
         for j in eachindex(gfpathv[i])
-            A[i] += (-1/π) * (tr(gfpathv[i][j])).im
+            A[i] += (-1/π) * (tr(gfpathv[i][j][select, select])).im
         end
     end
     return A/length(gfpathv[1])
@@ -371,17 +371,26 @@ end
 
 Calculate the order parameter.
 """
-function OrderParameters(oparams::Parameters, rparams::Parameters, sym::Symbol, vca::VCA, hilbert::Hilbert, bz::ReciprocalSpace, term::Term, μ::Real)
-    update!(vca, oparams, rparams)
+function OrderParameters(sym::Symbol, vca::VCA, bz::ReciprocalSpace, opterms::Tuple{Vararg{Term}}, μ::Real)
     rops = filter(op -> length(op) == 2, collect(expand(vca.refergenerator)))
     R, N = isempty(filter(op -> op.id[1].index.iid.nambu==op.id[2].index.iid.nambu, collect(rops))), length(vca.refergenerator.table)
     R ? N=N : N=2*N
-    term.value = convert(typeof(term.value), 1.0)
-    sm = referQuadraticTerms(R, collect(expand(term, filter(bond -> isintracell(bond), bonds(vca.cluster, term.bondkind)), hilbert)), zeros(ComplexF64, N, N), vca.refergenerator.table)
+    if isempty(opterms)
+        sm = Matrix{ComplexF64}(I, N, N)
+    else
+        [update!(term; Parameters{(id(term),)}(1.0)...) for term in opterms]
+        opgenerator = OperatorGenerator(opterms, filter(bond -> isintracell(bond), bonds(vca.cluster, opterms[1].bondkind)), vca.refergenerator.hilbert; table = vca.refergenerator.table)
+        sm = referQuadraticTerms(R, collect(expand(opgenerator)), zeros(ComplexF64, N, N), vca.refergenerator.table)
+    end
     oops = filter(op -> length(op) == 2, collect(expand(vca.origigenerator)))
     oopsseqs = seqs(oops, vca.origigenerator.table)
     rm = referQuadraticTerms(R, rops, zeros(ComplexF64, N, N), vca.refergenerator.table)
     return abs((1/length(bz))*quadgk(x -> OPintegrand(R, sym, vca, bz, x*im, sm, oops, oopsseqs, rm, μ), 0, Inf)[1]/π/length(vca.unitcell)/length(vca.cluster))
+end
+
+function OrderParameters(oparams::Parameters, rparams::Parameters, sym::Symbol, vca::VCA, bz::ReciprocalSpace, opterms::Tuple{Vararg{Term}}, μ::Real)
+    update!(vca, oparams, rparams)
+    return OrderParameters(sym, vca, bz, opterms, μ)
 end
 
 end #module
