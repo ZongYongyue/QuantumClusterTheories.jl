@@ -12,7 +12,7 @@ using Printf: @printf, @sprintf
 
 import QuantumLattices: update, update!
 
-export VCA, singleParticleGreenFunction, spectrum, densityofstates, GrandPotential, OrderParameters
+export VCA, singleParticleGreenFunction, spectrum, densityofstates, GrandPotential, OrderParameters, DistributionFunction
 
 const vcatimer = TimerOutput()
 """
@@ -387,10 +387,30 @@ function OrderParameters(sym::Symbol, vca::VCA, bz::ReciprocalSpace, opterms::Tu
     rm = referQuadraticTerms(R, rops, zeros(ComplexF64, N, N), vca.refergenerator.table)
     return abs((1/length(bz))*quadgk(x -> OPintegrand(R, sym, vca, bz, x*im, sm, oops, oopsseqs, rm, μ), 0, Inf)[1]/π/length(vca.unitcell)/length(vca.cluster))
 end
-
 function OrderParameters(oparams::Parameters, rparams::Parameters, sym::Symbol, vca::VCA, bz::ReciprocalSpace, opterms::Tuple{Vararg{Term}}, μ::Real)
     update!(vca, oparams, rparams)
     return OrderParameters(sym, vca, bz, opterms, μ)
+end
+
+"""
+    Disintegrand(sym::Symbol, vca::VCA, k::AbstractVector, iω::Complex, μ::Real)
+    DistributionFunction(sym::Symbol, vca::VCA, bz::ReciprocalSpace, μ::Real)
+
+Distribution Function of the system.
+"""
+function Disintegrand(sym::Symbol, vca::VCA, k::AbstractVector, iω::Complex, μ::Real, select::Union{Nothing, AbstractVector})
+    gfm = singleParticleGreenFunction(sym, vca, [k,], [iω,]; η=0.0, μ=μ)[1][1]
+    select==nothing ? gfm=gfm : gfm=gfm[select, select]
+    intra = (tr(gfm) - size(gfm,1)/(iω-1.0)).re
+    return intra
+end
+
+function DistributionFunction(sym::Symbol, vca::VCA, bz::ReciprocalSpace, μ::Real; select::Union{Nothing, AbstractVector}=nothing)
+    ds = zeros(Float64, length(bz))
+    for i in eachindex(bz)
+        ds[i] = quadgk(x -> Disintegrand(sym, vca, bz[i], x*im, μ, select), 0, Inf)[1]/π
+    end
+    return ds
 end
 
 end #module
