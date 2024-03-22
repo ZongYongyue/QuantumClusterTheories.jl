@@ -45,14 +45,23 @@ Select certain sites in the cluster.
 """
 function belongs(ids::AbstractVector)
     function sublattices(bond::Bond)
-        if bond.points[1].site in ids
-            return 1.0
+        if length(bond.points)==1
+            if (bond.points[1].site in ids)
+                return 1.0
+            else
+                return 0.0
+            end
         else
-            return 0.0
+            if (bond.points[1].site in ids) || (bond.points[2].site in ids)
+                return 1.0
+            else
+                return 0.0
+            end
         end
     end
     return sublattices
 end
+
 
 """
     phase_by_moire(ϕ::Real, spin::Rational)
@@ -311,7 +320,7 @@ function moiretuning(θ::Real, Vᶻ::Real)
     parameters = (a₀=3.28, m=0.45, θ=θ, Vᶻ=Vᶻ, μ=8.31, V=-1.28, ψ=22.7, w=-12.9)
     bltmd = Algorithm(:BLTMD, BLTMD(values(parameters)...; truncation=4); parameters=parameters, map=bltmdmap)
     recipls = bltmd.frontend.reciprocallattice.translations
-    lattice = MoireTriangular(2, reciprocals(recipls))
+    lattice = MoireTriangular(4, reciprocals(recipls))
     brillouinzone = BrillouinZone(recipls, 24)
     t = terms(bltmd, lattice, brillouinzone; atol=10^-6)
     return t[1:end-1]

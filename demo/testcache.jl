@@ -1,4 +1,4 @@
-include("/fsa/home/jxl_zongyy/mycode/QuantumClusterTheories.jl/src/tools.jl")
+include("/Users/zongyy/Library/Mobile Documents/com~apple~CloudDocs/Clone/Fork/master/QuantumClusterTheories.jl/src/tools.jl")
 #define quantum lattice
 unitcell = Lattice([0, 0]; vectors=[[1, 0],[0, 1]], name=:L4)
 cluster = Lattice(unitcell,(2,2),('p','p'))
@@ -13,6 +13,8 @@ referterms = (t_r, U, af)
 neighbors = Neighbors(0=>0.0, 1=>1.0)
 rz = ReciprocalZone(reciprocals(cluster.vectors); length=100)
 #instantiate VCA
-vca = VCA(:N, unitcell, cluster, hilbert, origiterms, referterms, bs; neighbors=neighbors, m=200, modelname="Test", cachepath="/fsa/home/jxl_zongyy/testcache")
+i = 1
+j = 2
+vca = VCA(:N, unitcell, cluster, hilbert, origiterms, referterms, bs; neighbors=neighbors, m=200, modelname="Test_N$i $j", cachepath="/Users/zongyy/Library/Mobile Documents/com~apple~CloudDocs/Clone/Fork/master/QuantumClusterTheories.jl/demo")
 #repr(vca.refergenerator)
 update!(vca, (t=2,), (af=0.5,))

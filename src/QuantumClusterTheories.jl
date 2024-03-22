@@ -241,12 +241,20 @@ end
 
 Give the Green function of a certain path or area in k-space with respect to a certain energy.
 """
-function GreenFunctionPath(normal::Bool, om::AbstractMatrix, oops::AbstractVector, oopsseqs::AbstractVector, rm::AbstractMatrix, perioder::Perioder, cluster::AbstractLattice, k_path::Union{AbstractVector, ReciprocalSpace}, CGFm::AbstractMatrix)
+function GreenFunctionPath(normal::Bool, om::AbstractMatrix, oops::AbstractVector, oopsseqs::AbstractVector, rm::AbstractMatrix, perioder::Perioder, cluster::AbstractLattice, k_path::Union{AbstractVector, ReciprocalSpace}, CGFm::AbstractMatrix, ifper::Bool)
     gfpath = Vector{Matrix{ComplexF64}}(undef, length(k_path))
-    for i in eachindex(k_path)
-        dest = copy(om)
-        Vm = origiQuadraticTerms!(normal, dest, oops, oopsseqs, k_path[i]) - rm
-        gfpath[i] = perGreenFunction(normal, CPTcore(CGFm, Vm), k_path[i], perioder, cluster)
+    if ifper 
+        for i in eachindex(k_path)
+            dest = copy(om)
+            Vm = origiQuadraticTerms!(normal, dest, oops, oopsseqs, k_path[i]) - rm
+            gfpath[i] = perGreenFunction(normal, CPTcore(CGFm, Vm), k_path[i], perioder, cluster)
+        end
+    else
+        for i in eachindex(k_path)
+            dest = copy(om)
+            Vm = origiQuadraticTerms!(normal, dest, oops, oopsseqs, k_path[i]) - rm
+            gfpath[i] = CPTcore(CGFm, Vm)
+        end
     end
     return gfpath
 end 
@@ -256,14 +264,14 @@ end
 
 The single particle Green function in k-ω space.
 """
-function singleParticleGreenFunction(sym::Symbol, vca::VCA, k_path::Union{AbstractVector, ReciprocalSpace}, ω_range::Union{AbstractVector,AbstractRange}; μ::Real=0.0, η::Real=0.05, dstr::Bool=false)
+function singleParticleGreenFunction(sym::Symbol, vca::VCA, k_path::Union{AbstractVector, ReciprocalSpace}, ω_range::Union{AbstractVector,AbstractRange}; μ::Real=0.0, η::Real=0.05, dstr::Bool=false, ifper::Bool=true)
     ω_range = ω_range .+ (μ + η*im)
     oops, rops = filter(op -> length(op) == 2, collect(expand(vca.origigenerator))), filter(op -> length(op) == 2, collect(expand(vca.refergenerator)))
     R, N = isempty(filter(op -> op.id[1].index.iid.nambu==op.id[2].index.iid.nambu, collect(rops))), length(vca.refergenerator.table)
     R ? N=N : N=2*N
     oopsseqs = seqs(oops, vca.origigenerator.table)
     rm = referQuadraticTerms(R, rops, zeros(ComplexF64, N, N), vca.refergenerator.table)
-    dstr ? (gfpv=pmap(ω->GreenFunctionPath(R, zeros(ComplexF64, N, N), oops, oopsseqs, rm, vca.perioder, vca.cluster, k_path, ClusterGreenFunction(R, sym, vca.solver, ω)), ω_range)) : (gfpv=[GreenFunctionPath(R, zeros(ComplexF64, N, N), oops, oopsseqs, rm, vca.perioder, vca.cluster, k_path, ClusterGreenFunction(R, sym, vca.solver, ω)) for ω in ω_range])
+    dstr ? (gfpv=pmap(ω->GreenFunctionPath(R, zeros(ComplexF64, N, N), oops, oopsseqs, rm, vca.perioder, vca.cluster, k_path, ClusterGreenFunction(R, sym, vca.solver, ω), ifper), ω_range)) : (gfpv=[GreenFunctionPath(R, zeros(ComplexF64, N, N), oops, oopsseqs, rm, vca.perioder, vca.cluster, k_path, ClusterGreenFunction(R, sym, vca.solver, ω), ifper) for ω in ω_range])
     return gfpv
 end
 
