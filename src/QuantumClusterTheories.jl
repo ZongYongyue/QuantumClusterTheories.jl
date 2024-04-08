@@ -107,7 +107,7 @@ function update!(vca::VCA, oparams::Parameters, rparams::Parameters)
     modelname = vca.modelname
     if !isnothing(cachepath)
         modelname_str = isnothing(modelname) ? "default_model" : modelname
-        cache_file_path = joinpath(cachepath, @sprintf "%s_%s_%s_%s_%s.jls" modelname_str vca.cluster.name repr(vca.parts.sector) repr(vca.refergenerator) EDSolver )
+        cache_file_path = joinpath(cachepath, @sprintf "%s_%s_%s_%s.jls" modelname_str vca.cluster.name repr(vca.refergenerator) EDSolver )
         if isfile(cache_file_path)
             vca.solver = deserialize(cache_file_path)
             println("Load edsolver from $cache_file_path")
