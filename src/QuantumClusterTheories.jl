@@ -260,18 +260,18 @@ function GreenFunctionPath(normal::Bool, om::AbstractMatrix, oops::AbstractVecto
 end 
 
 """
-    singleParticleGreenFunction(sym::Symbol, vca::VCA, k_path::Union{AbstractVector, ReciprocalSpace}, ω_range::Union{AbstractVector,AbstractRange}; μ::Real=0.0, η::Real=0.05, dstr::Bool=false)
+    singleParticleGreenFunction(sym::Symbol, vca::VCA, k_path::Union{AbstractVector, ReciprocalSpace}, ω_range::Union{AbstractVector,AbstractRange}; μ::Real=0.0, η::Real=0.05)
 
 The single particle Green function in k-ω space.
 """
-function singleParticleGreenFunction(sym::Symbol, vca::VCA, k_path::Union{AbstractVector, ReciprocalSpace}, ω_range::Union{AbstractVector,AbstractRange}; μ::Real=0.0, η::Real=0.05, dstr::Bool=false, loc::Union{Nothing, AbstractVector}=nothing)
+function singleParticleGreenFunction(sym::Symbol, vca::VCA, k_path::Union{AbstractVector, ReciprocalSpace}, ω_range::Union{AbstractVector,AbstractRange}; μ::Real=0.0, η::Real=0.05)
     ω_range = ω_range .+ (μ + η*im)
     oops, rops = filter(op -> length(op) == 2, collect(expand(vca.origigenerator))), filter(op -> length(op) == 2, collect(expand(vca.refergenerator)))
     R, N = isempty(filter(op -> op.id[1].index.iid.nambu==op.id[2].index.iid.nambu, collect(rops))), length(vca.refergenerator.table)
     R ? N=N : N=2*N
     oopsseqs = seqs(oops, vca.origigenerator.table)
     rm = referQuadraticTerms(R, rops, zeros(ComplexF64, N, N), vca.refergenerator.table)
-    dstr ? (gfpv=pmap(ω->GreenFunctionPath(R, zeros(ComplexF64, N, N), oops, oopsseqs, rm, vca.perioder, vca.cluster, k_path, ClusterGreenFunction(R, sym, vca.solver, ω); loc=loc), ω_range)) : (gfpv=[GreenFunctionPath(R, zeros(ComplexF64, N, N), oops, oopsseqs, rm, vca.perioder, vca.cluster, k_path, ClusterGreenFunction(R, sym, vca.solver, ω); loc=loc) for ω in ω_range])
+    gfpv = [GreenFunctionPath(R, zeros(ComplexF64, N, N), oops, oopsseqs, rm, vca.perioder, vca.cluster, k_path, ClusterGreenFunction(R, sym, vca.solver, ω); loc=loc) for ω in ω_range]
     return gfpv
 end
 
