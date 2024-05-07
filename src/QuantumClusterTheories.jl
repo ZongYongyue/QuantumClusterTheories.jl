@@ -20,10 +20,9 @@ const vcatimer = TimerOutput()
 
 The information needed in performing periodic procedure. 
 """
-struct Perioder{P<:AbstractVector{<:Integer}, T<:AbstractArray{P}, S<:AbstractArray{P}, C<:AbstractVector{<:Tuple}}
+struct Perioder{P<:AbstractVector{<:Integer}, T<:AbstractArray{P}, S<:AbstractArray{P}}
     map₁::T
     map₂::S
-    channels::C
 end 
 
 """
@@ -36,25 +35,22 @@ WARNING : User should ensure that the cluster you choosed is compatible with the
 function Perioder(unitcell::AbstractLattice, cluster::AbstractLattice, table::Table)
     @assert !isempty(unitcell.vectors) "the vectors in unitcell cannot be empty !"
     seq = sort(collect(keys(table)), by = x -> table[x])
-    nspin, norbi, channels = sort(collect(Set(key[1] for key in seq))), sort(collect(Set(key[3] for key in seq))), Vector{Tuple{Vector{Int64},Vector{Int64}}}()
+    nspin, norbi = sort(collect(Set(key[1] for key in seq))), sort(collect(Set(key[3] for key in seq)))
     map₁ = [filter(k -> nspin[i]==seq[k][1]&&norbi[j]==seq[k][3], 1:length(seq)) for i in eachindex(nspin), j in eachindex(norbi)]
     map₂ = [filter(j -> issubordinate(cluster.coordinates[:,j]-unitcell.coordinates[:,i], unitcell.vectors), 1:length(cluster)) for i in 1:length(unitcell)]
-    for i in 1:size(map₁, 1), j in 1:size(map₁, 2), u in 1:size(map₁, 1), v in 1:size(map₁, 2) 
-        push!(channels, ([i, j], [u, v]))
-    end
-    return Perioder(map₁, map₂, channels)
+    return Perioder(map₁, map₂)
 end
 
 """
     VCA{L<:AbstractLattice, G<:EDSolver, P<:Perioder} <: Frontend
 
-Variational Cluster Approach(VCA) method for a quantum lattice system.
+Variational Cluster Approach(VCA) method for a quantum lattice.
 """
-mutable struct VCA{L<:AbstractLattice, G<:EDSolver, P<:Perioder, T<:Partition} <: Frontend
+mutable struct VCA{L<:AbstractLattice, S<:AbstractLattice, G<:EDSolver, P<:Perioder, T<:Partition} <: Frontend
     const modelname::Union{String, Nothing}
     const cachepath::Union{String, Nothing}
     const unitcell::L
-    const cluster::L
+    const cluster::S
     const origigenerator::OperatorGenerator
     const refergenerator::OperatorGenerator
     solver::G
@@ -193,24 +189,21 @@ end
 
 Perform the periodic procedure to cluster Green function, obtatined periodization Green function with respect to whole k-space.
 """
-function perGreenFunction(normal::Bool, GFm::AbstractMatrix, k::AbstractVector, perioder::Perioder, cluster::AbstractLattice)
+function perGreenFunction(normal::Bool, GFm::AbstractMatrix, pm::AbstractMatrix, perioder::Perioder, cluster::AbstractLattice)
     N₁, N₂, P = length(perioder.map₁), length(perioder.map₂), size(GFm, 1)÷2
     normal ? (V = 1) : (V = 4)
     normal ? (bgfv = [GFm]) : (bgfv = [GFm[1:P,1:P], GFm[1:P,(P+1):2P], GFm[(P+1):2P, 1:P], GFm[(P+1):2P, (P+1):2P]])
-    gfvs = [Vector{Matrix{ComplexF64}}(undef, length(perioder.channels)) for _ in 1:V]
-    pm = periodmatrix(cluster.coordinates, k)
+    gfvs = [Matrix{ComplexF64}(undef, N₁*N₂,  N₁*N₂) for _ in 1:V]
     for i in 1:V
-        for j in eachindex(perioder.channels)
-            gfvs[i][j] = periodsum(perioder.map₂, bgfv[i][perioder.map₁[perioder.channels[j][1]...], perioder.map₁[perioder.channels[j][2]...]].*pm, N₂, size(cluster.coordinates,2))
+        for m in 1:size(perioder.map₁, 1), n in 1:size(perioder.map₁, 2), u in 1:size(perioder.map₁, 1), v in 1:size(perioder.map₁, 2) 
+            gfvs[i][(m*n-1)*N₂ .+ Vector(1:N₂), (u*v-1)*N₂ .+ Vector(1:N₂)] = periodsum(perioder.map₂, bgfv[i][perioder.map₁[m, n], perioder.map₁[u, v]].*pm, N₂, size(cluster.coordinates,2))
         end
     end
-    gfmv = [reshapematrix(N₁, N₂, gfv) for gfv in gfvs]
-    normal ? (gfm = gfmv[1]) : (gfm = [gfmv[1] gfmv[2]; gfmv[3] gfmv[4]])
+    normal ? (gfm = gfvs[1]) : (gfm = [gfvs[1] gfvs[2]; gfvs[3] gfvs[4]])
     return gfm
 end
-function periodmatrix(coordinates::AbstractMatrix, k::AbstractVector)
-    L = size(coordinates,2)
-    pm = Matrix{ComplexF64}(undef, L, L)
+function periodmatrix!(pm::AbstractMatrix, coordinates::AbstractMatrix, k::AbstractVector)
+    L = size(coordinates, 2)
     for i in 1:L, j in 1:L
         @views ra, rb = coordinates[:, i], coordinates[:, j]
         pm[i, j] = exp(-im*dot(k, (ra - rb)))
@@ -225,29 +218,20 @@ function periodsum(map₂::AbstractVector, lgfm::AbstractMatrix, N::Int, L::Int)
     end
     return pgfm
 end
-function reshapematrix(N₁::Int, N₂::Int, gfv)
-    gfm = Matrix{ComplexF64}(undef, N₁*N₂,  N₁*N₂)
-    gfmm = reshape(gfv, (N₁, N₁))
-    for i in 1:N₁, j in 1:N₁
-        for u in 1:N₂, v in 1:N₂
-            gfm[(i-1)*N₂ + u, (j-1)*N₂ + v] = gfmm[i, j][u, v]
-        end
-    end
-    return gfm
-end
 
 """
     GreenFunctionPath(normal::Bool, om::AbstractMatrix, oops::AbstractVector, oopsseqs::AbstractVector, rm::AbstractMatrix, perioder::Perioder, cluster::AbstractLattice, k_path::Union{AbstractVector, ReciprocalSpace}, CGFm::AbstractMatrix)
 
 Give the Green function of a certain path or area in k-space with respect to a certain energy.
 """
-function GreenFunctionPath(normal::Bool, om::AbstractMatrix, oops::AbstractVector, oopsseqs::AbstractVector, rm::AbstractMatrix, perioder::Perioder, cluster::AbstractLattice, k_path::Union{AbstractVector, ReciprocalSpace}, CGFm::AbstractMatrix; loc::Union{Nothing, AbstractVector}=nothing)
+function GreenFunctionPath(normal::Bool, om::AbstractMatrix, pm::AbstractMatrix, oops::AbstractVector, oopsseqs::AbstractVector, rm::AbstractMatrix, perioder::Perioder, cluster::AbstractLattice, k_path::Union{AbstractVector, ReciprocalSpace}, CGFm::AbstractMatrix; loc::Union{Nothing, AbstractVector}=nothing)
     gfpath = Vector{Matrix{ComplexF64}}(undef, length(k_path))
     if isnothing(loc)
         for i in eachindex(k_path)
-            dest = copy(om)
-            Vm = origiQuadraticTerms!(normal, dest, oops, oopsseqs, k_path[i]) - rm
-            gfpath[i] = perGreenFunction(normal, CPTcore(CGFm, Vm), k_path[i], perioder, cluster)
+            fill!(om, 0)
+            periodmatrix!(pm, cluster.coordinates, k_path[i])
+            Vm = origiQuadraticTerms!(normal, om, oops, oopsseqs, k_path[i]) - rm
+            gfpath[i] = perGreenFunction(normal, CPTcore(CGFm, Vm), pm, perioder, cluster)
         end
     else
         for i in eachindex(k_path)
@@ -269,12 +253,44 @@ function singleParticleGreenFunction(sym::Symbol, vca::VCA, k_path::Union{Abstra
     oops, rops = filter(op -> length(op) == 2, collect(expand(vca.origigenerator))), filter(op -> length(op) == 2, collect(expand(vca.refergenerator)))
     R, N = isempty(filter(op -> op.id[1].index.iid.nambu==op.id[2].index.iid.nambu, collect(rops))), length(vca.refergenerator.table)
     R ? N=N : N=2*N
+    pm = zeros(ComplexF64, size(vca.cluster.coordinates,2), size(vca.cluster.coordinates,2))
     oopsseqs = seqs(oops, vca.origigenerator.table)
     rm = referQuadraticTerms(R, rops, zeros(ComplexF64, N, N), vca.refergenerator.table)
-    gfpv = [GreenFunctionPath(R, zeros(ComplexF64, N, N), oops, oopsseqs, rm, vca.perioder, vca.cluster, k_path, ClusterGreenFunction(R, sym, vca.solver, ω); loc=loc) for ω in ω_range]
+    gfpv = [GreenFunctionPath(R, zeros(ComplexF64, N, N), pm,  oops, oopsseqs, rm, vca.perioder, vca.cluster, k_path, ClusterGreenFunction(R, sym, vca.solver, ω); loc=loc) for ω in ω_range]
     return gfpv
 end
 
+# function spliceClustersGreenFunction(sym::Symbol, vcas::AbstractVector{VCA}, acweight::AbstractVector, k_path::Union{AbstractVector, ReciprocalSpace}, ω_range::Union{AbstractVector,AbstractRange}; μ::Real=0.0, η::Real=0.05, loc::Union{Nothing, AbstractVector}=nothing)
+#     ω_range = ω_range .+ (μ + η*im)
+#     oops, rops = filter(op -> length(op) == 2, collect(expand(vca.origigenerator))), filter(op -> length(op) == 2, collect(expand(vca.refergenerator)))
+#     R, N = isempty(filter(op -> op.id[1].index.iid.nambu==op.id[2].index.iid.nambu, collect(rops))), length(vca.refergenerator.table)
+#     R ? N=N : N=2*N
+#     pm = zeros(ComplexF64, size(vca.cluster.coordinates,2), size(vca.cluster.coordinates,2))
+#     oopsseqs = seqs(oops, vca.origigenerator.table)
+#     rm = referQuadraticTerms(R, rops, zeros(ComplexF64, N, N), vca.refergenerator.table)
+#     #gfpv = [GreenFunctionPath(R, zeros(ComplexF64, N, N), pm,  oops, oopsseqs, rm, vca.perioder, vca.cluster, k_path, ClusterGreenFunction(R, sym, vca.solver, ω); loc=loc) for ω in ω_range]
+
+#     return gfpv
+# end
+
+# function sCGreenFunctionPath(normal::Bool, om::AbstractMatrix, pm::AbstractMatrix, oops::AbstractVector, oopsseqs::AbstractVector, rm::AbstractMatrix, perioder::Perioder, cluster::AbstractLattice, k_path::Union{AbstractVector, ReciprocalSpace}, CGFm::AbstractMatrix; loc::Union{Nothing, AbstractVector}=nothing)
+#     gfpath = Vector{Matrix{ComplexF64}}(undef, length(k_path))
+#     if isnothing(loc)
+#         for i in eachindex(k_path)
+#             fill!(om, 0)
+#             periodmatrix!(pm, cluster.coordinates, k_path[i])
+#             Vm = origiQuadraticTerms!(normal, om, oops, oopsseqs, k_path[i]) - rm
+#             gfpath[i] = perGreenFunction(normal, CPTcore(CGFm, Vm), pm, perioder, cluster)
+#         end
+#     else
+#         for i in eachindex(k_path)
+#             dest = copy(om)
+#             Vm = origiQuadraticTerms!(normal, dest, oops, oopsseqs, k_path[i]) - rm
+#             gfpath[i] = CPTcore(CGFm, Vm)[loc, loc]
+#         end
+#     end
+#     return gfpath
+# end 
 """
     spectrum(gfpathv::AbstractVector)
 

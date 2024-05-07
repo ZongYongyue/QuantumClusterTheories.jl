@@ -2,6 +2,7 @@ using QuantumLattices
 using ExactDiagonalization
 using QuantumClusterTheories
 using QuadGK
+using Test
 
 function phase_by_azimuth(azs::AbstractVector, phs::AbstractVector)
     function pbz(bond::Bond)
@@ -47,7 +48,6 @@ vca₂ = VCA(:A, unitcell, cluster, hilbert, origiterms₂, referterms₂, bs₂
 @testset "Perioder" begin
     @test vca₁.perioder.map₁ == [[a, a+b] for a in [1, 3], b in [1]]
     @test vca₁.perioder.map₂ == [[1, 2],]
-    @test vca₁.perioder.channels == [([1, 1], [1, 1]),([1, 1], [2, 1]),([2, 1], [1, 1]),([2, 1], [2, 1])]
 end
 
 @testset "singleParticleGreenFunction" begin
