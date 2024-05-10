@@ -42,6 +42,23 @@ function Perioder(unitcell::AbstractLattice, cluster::AbstractLattice, table::Ta
 end
 
 """
+    Clusteration{H<:Hilbert, B<:BinaryBases, T<:Term, E<:Term, O<:Tuple{Vararg{T}}, R<:Tuple{Vararg{E}}}
+
+Cluster information for performing Variational Cluster Approach(VCA) method
+"""
+struct Clusteration{I<:Union{Nothing, AbstractVector{<:Integer}}, R<:Union{Nothing, Tuple{Vararg{Term}}}, M<:Integer}
+    cid::I
+    hilbert::Hilbert
+    bs::BinaryBases
+    neighbors::Union{Nothing, Int, Neighbors}
+    referterms::R
+    m::M
+end
+function Clusteration(hilbert::Hilbert, bs::BinaryBases; cid::Union{Nothing, AbstractVector{<:Integer}}=nothing, referterms::Union{Nothing, Tuple{Vararg{Term}}}=nothing, neighbors::Union{Nothing, Int, Neighbors}=nothing, m::Int=200)
+    return Clusteration(cid, hilbert, bs, neighbors, referterms, m)
+end
+
+"""
     VCA{L<:AbstractLattice, G<:EDSolver, P<:Perioder} <: Frontend
 
 Variational Cluster Approach(VCA) method for a quantum lattice.
@@ -70,12 +87,12 @@ end
 
 Construct the Variational Cluster Approach(VCA) method for a quantum lattice system with EDSolver.
 """
-function VCA(sym::Symbol, unitcell::AbstractLattice, cluster::AbstractLattice, hilbert::Hilbert, origiterms::Tuple{Vararg{Term}}, referterms::Tuple{Vararg{Term}}, bs::BinaryBases; neighbors::Union{Nothing, Int, Neighbors}=nothing, m::Int=200, modelname::Union{Nothing,String}=nothing, cachepath::Union{Nothing, String}=nothing)
+function VCA(sym::Symbol, unitcell::AbstractLattice, cluster::AbstractLattice, hilbert::Hilbert, origiterms::Tuple{Vararg{Term}}, referterms::Tuple{Vararg{Term}}, bs::BinaryBases; perioder::Union{Perioder, Nothing}=nothing, neighbors::Union{Nothing, Int, Neighbors}=nothing, m::Int=200, modelname::Union{Nothing,String}=nothing, cachepath::Union{Nothing, String}=nothing)
     table = Table(hilbert, Metric(EDKind(hilbert), hilbert))
     isnothing(neighbors) && (neighbors = maximum(term->term.bondkind, origiterms))
     origibonds = bonds(cluster, neighbors)
     referbonds = filter(bond -> isintracell(bond), origibonds)
-    perioder = Perioder(unitcell, cluster, table) 
+    isnothing(perioder) ? (perioder = Perioder(unitcell, cluster, table)) : (perioder = perioder)
     parts = Partition(sym, table, bs)
     origigenerator, refergenerator = OperatorGenerator(origiterms, origibonds, hilbert; table = table), OperatorGenerator(referterms, referbonds, hilbert; table = table)
     if !isnothing(cachepath)
@@ -96,6 +113,11 @@ function VCA(sym::Symbol, unitcell::AbstractLattice, cluster::AbstractLattice, h
     end
     return VCA(modelname, cachepath, unitcell, cluster, origigenerator, refergenerator, edsolver, perioder, parts)
 end
+function VCA(sym::Symbol, unitcell::AbstractLattice, cluster::AbstractLattice, clusteration::Clusteration, origiterms::Tuple{Vararg{Term}}; perioder::Union{Perioder, Nothing}=nothing, modelname::Union{Nothing,String}=nothing, cachepath::Union{Nothing, String}=nothing)
+    hilbert, bs, neighbors, referterms, m = clusteration.hilbert, clusteration.bs, clusteration.neighbors, clusteration.referterms, clusteration.m
+    return VCA(sym, unitcell, cluster, hilbert, origiterms, referterms, bs; perioder=perioder, neighbors=neighbors, m=m, modelname=modelname, cachepath=cachepath)
+end
+
 function update!(vca::VCA, oparams::Parameters, rparams::Parameters)
     update!(vca.origigenerator; oparams...)
     update!(vca.refergenerator; rparams...)
