@@ -12,7 +12,8 @@ using Printf: @printf, @sprintf
 
 import QuantumLattices: update, update!
 
-export VCA, singleParticleGreenFunction, spectrum, densityofstates, GrandPotential, OrderParameters, DistributionFunction
+export Perioder, Clusteration, VCA, singleParticleGreenFunction, spectrum, densityofstates, GrandPotential, OrderParameters, DistributionFunction
+export SVCA, spliceLatticeGreenFunction
 
 const vcatimer = TimerOutput()
 """
@@ -149,12 +150,13 @@ end
 
 Variational Cluster Approach(VCA) method for spliced quantum lattices.
 """
-mutable struct SVCA{U<:AbstractLattice, L<:AbstractLattice, C<:AbstractVector{L}, A<:AbstractLattice, G<:EDSolver, E<:AbstractVector{G}, P<:Perioder, T<:Partition, R<:AbstractVector{T}} <: Frontend
+mutable struct SVCA{U<:AbstractLattice, L<:AbstractLattice, C<:AbstractVector{L}, A<:AbstractLattice, M<:AbstractVector, G<:EDSolver, E<:AbstractVector{G}, P<:Perioder, T<:Partition, R<:AbstractVector{T}} <: Frontend
     const modelname::Union{String, Nothing}
     const cachepath::Union{String, Nothing}
     const unitcell::U
     const clusters::C
     const lattice::A
+    const mapcgf::M
     const origigenerator::OperatorGenerator
     const refergenerator::OperatorGenerator
     solvers::E
@@ -172,6 +174,9 @@ function SVCA(sym::Symbol, unitcell::AbstractLattice, clusters::AbstractVector{<
     table = Table(hilbert, Metric(EDKind(hilbert), hilbert))
     lattice = Lattice(:lattice, hcat([cluster.coordinates for cluster in clusters]...), QuantumLattices.Spatials.vectorconvert(lvectors))
     splice = vcat([[i for _ in axes(clusters[i].coordinates, 2)] for i in eachindex(clusters)]...)
+    cids = [cln.cid for cln in clns]
+    temp = [filter(i->j in splice[i], 1:length(splice)) for j in eachindex(clusters)]
+    mapcgf = [[sort(vcat([filter(i-> j in sort(collect(keys(table)), by = x -> table[x])[i][2], 1:length(table)) for j in x]...)) for x in temp], [filter(i->j in cids[i], 1:length(cids))[1] for j in eachindex(clusters)]]
     isnothing(neighbors) && (neighbors = maximum(term->term.bondkind, origiterms))
     origibonds = bonds(lattice, neighbors)
     referbonds = filter(bondd->isintracell(bondd), filter(bbond->isintraclusters(bbond, splice), origibonds))
@@ -203,7 +208,7 @@ function SVCA(sym::Symbol, unitcell::AbstractLattice, clusters::AbstractVector{<
             edsolvers[i] = EDSolver(EDKind(clns[i].hilbert), partses[i], crefergenerator, clns[i].bs, ctable; m = clns[i].m)
         end
     end
-    return SVCA(modelname, cachepath, unitcell, clusters, lattice, origigenerator, refergenerator, edsolvers, perioder, partses)
+    return SVCA(modelname, cachepath, unitcell, clusters, lattice, mapcgf, origigenerator, refergenerator, edsolvers, perioder, partses)
 end
 
 isintraclusters(bond::Bond, splice::AbstractVector{<:Integer}) = all(point-> splice[bond.points[1].site]==splice[point.site] , bond)
@@ -383,37 +388,32 @@ function singleParticleGreenFunction(sym::Symbol, vca::VCA, k_path::Union{Abstra
     return gfpv
 end
 
-# function spliceClustersGreenFunction(sym::Symbol, vcas::AbstractVector{VCA}, acweight::AbstractVector, k_path::Union{AbstractVector, ReciprocalSpace}, ω_range::Union{AbstractVector,AbstractRange}; μ::Real=0.0, η::Real=0.05, loc::Union{Nothing, AbstractVector}=nothing)
-#     ω_range = ω_range .+ (μ + η*im)
-#     oops, rops = filter(op -> length(op) == 2, collect(expand(vca.origigenerator))), filter(op -> length(op) == 2, collect(expand(vca.refergenerator)))
-#     R, N = isempty(filter(op -> op.id[1].index.iid.nambu==op.id[2].index.iid.nambu, collect(rops))), length(vca.refergenerator.table)
-#     R ? N=N : N=2*N
-#     pm = zeros(ComplexF64, size(vca.cluster.coordinates,2), size(vca.cluster.coordinates,2))
-#     oopsseqs = seqs(oops, vca.origigenerator.table)
-#     rm = referQuadraticTerms(R, rops, zeros(ComplexF64, N, N), vca.refergenerator.table)
-#     #gfpv = [GreenFunctionPath(R, zeros(ComplexF64, N, N), pm,  oops, oopsseqs, rm, vca.perioder, vca.cluster, k_path, ClusterGreenFunction(R, sym, vca.solver, ω); loc=loc) for ω in ω_range]
+"""
+    spliceLatticeGreenFunction(sym::Symbol, vca::VCA, k_path::Union{AbstractVector, ReciprocalSpace}, ω_range::Union{AbstractVector,AbstractRange}; μ::Real=0.0, η::Real=0.05)
 
-#     return gfpv
-# end
+The single particle Green function in k-ω space for spliced quantum lattices.
+"""
+function spliceLatticeGreenFunction(sym::Symbol, svca::SVCA, k_path::Union{AbstractVector, ReciprocalSpace}, ω_range::Union{AbstractVector,AbstractRange}; μ::Real=0.0, η::Real=0.05, loc::Union{Nothing, AbstractVector}=nothing)
+    ω_range = ω_range .+ (μ + η*im)
+    oops, rops = filter(op -> length(op) == 2, collect(expand(svca.origigenerator))), filter(op -> length(op) == 2, collect(expand(svca.refergenerator)))
+    R, N = isempty(filter(op -> op.id[1].index.iid.nambu==op.id[2].index.iid.nambu, collect(rops))), length(svca.refergenerator.table)
+    R ? N=N : N=2*N
+    pm = zeros(ComplexF64, size(svca.lattice.coordinates, 2), size(svca.lattice.coordinates, 2))
+    oopsseqs = seqs(oops, svca.origigenerator.table)
+    rm = referQuadraticTerms(R, rops, zeros(ComplexF64, N, N), svca.refergenerator.table)
+    cgfm = zeros(ComplexF64, length(svca.refergenerator.table), length(svca.refergenerator.table))
+    gfpv = Vector{Vector}(undef, length(ω_range))
+    for i in eachindex(ω_range)
+        fill!(cgfm, 0)
+        cgfv = [ClusterGreenFunction(R, sym, svca.solvers[k], ω_range[i]) for k in eachindex(svca.solvers)]
+        for j in eachindex(svca.mapcgf[1])
+            cgfm[svca.mapcgf[1][j], svca.mapcgf[1][j]] = cgfv[svca.mapcgf[2][j]]
+        end
+        gfpv[i] = GreenFunctionPath(R, zeros(ComplexF64, N, N), pm,  oops, oopsseqs, rm, svca.perioder, svca.lattice, k_path, cgfm; loc=loc)
+    end
+    return gfpv
+end
 
-# function sCGreenFunctionPath(normal::Bool, om::AbstractMatrix, pm::AbstractMatrix, oops::AbstractVector, oopsseqs::AbstractVector, rm::AbstractMatrix, perioder::Perioder, cluster::AbstractLattice, k_path::Union{AbstractVector, ReciprocalSpace}, CGFm::AbstractMatrix; loc::Union{Nothing, AbstractVector}=nothing)
-#     gfpath = Vector{Matrix{ComplexF64}}(undef, length(k_path))
-#     if isnothing(loc)
-#         for i in eachindex(k_path)
-#             fill!(om, 0)
-#             periodmatrix!(pm, cluster.coordinates, k_path[i])
-#             Vm = origiQuadraticTerms!(normal, om, oops, oopsseqs, k_path[i]) - rm
-#             gfpath[i] = perGreenFunction(normal, CPTcore(CGFm, Vm), pm, perioder, cluster)
-#         end
-#     else
-#         for i in eachindex(k_path)
-#             dest = copy(om)
-#             Vm = origiQuadraticTerms!(normal, dest, oops, oopsseqs, k_path[i]) - rm
-#             gfpath[i] = CPTcore(CGFm, Vm)[loc, loc]
-#         end
-#     end
-#     return gfpath
-# end 
 """
     spectrum(gfpathv::AbstractVector)
 
