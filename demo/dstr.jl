@@ -31,7 +31,7 @@ k_path = ReciprocalPath(reciprocals(unitcell.vectors), line"Γ-X", length=100)
 dstr = DistributionFunction(:f, vca, k_path, 1; select=[1,])
 f = plot(k_path, dstr)
 
-#=
+
 unitcell = Lattice([0, 0]; vectors = [[√3/2, 1/2], [0, 1]])
 cluster = Lattice(unitcell, (2,2),('p','p'))
 hilbert = Hilbert(site=>Fock{:f}(1, 2) for site=1:length(cluster))
@@ -46,4 +46,3 @@ k_path = ReciprocalPath(reciprocals(unitcell.vectors), hexagon"Γ-K, 120°", len
 
 dstr = Dstr(:f, vca, k_path, 1.5)
 f = plot(k_path, dstr)
-=#
