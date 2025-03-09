@@ -1,0 +1,18 @@
+include("/fsa/home/jxl_zongyy/mycode/QuantumClusterTheories.jl/src/tools.jl")
+#define quantum lattice
+unitcell = Lattice([0, 0]; vectors=[[1, 0],[0, 1]], name=:L4)
+cluster = Lattice(unitcell,(2,2),('p','p'))
+hilbert = Hilbert(site=>Fock{:f}(1, 2) for site=1:length(cluster))
+bs = Sector(hilbert, SpinfulParticle(4, 0.0))
+t = Hopping(:t, Complex(-1.0), 1)
+U = Hubbard(:U, Complex(4.0))
+origiterms = (t, U)
+t_r = Hopping(:t, Complex(-1.0), 1)
+af = Onsite(:af, Complex(0.3), MatrixCoupling(:, FID, :, σ"z", :); amplitude=antiferro([π, π]))
+referterms = (t_r, U, af)
+neighbors = Neighbors(0=>0.0, 1=>1.0)
+rz = ReciprocalZone(reciprocals(cluster.vectors); length=100)
+#instantiate VCA
+vca = VCA(:N, unitcell, cluster, hilbert, origiterms, referterms, bs; neighbors=neighbors, m=200, modelname="Test", cachepath="/fsa/home/jxl_zongyy/testcache")
+#repr(vca.refergenerator)
+update!(vca, (t=2,), (af=0.5,))

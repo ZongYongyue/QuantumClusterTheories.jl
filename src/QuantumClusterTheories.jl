@@ -4,12 +4,16 @@ using ExactDiagonalization
 using LinearAlgebra
 using QuadGK
 using QuantumLattices
+using QuantumLattices: decimaltostr
 using Distributed
+using Serialization
 using TimerOutputs
+using Printf: @printf, @sprintf
 
 import QuantumLattices: update, update!
 
-export VCA, singleParticleGreenFunction, spectrum, GrandPotential, OrderParameters
+export Perioder, VCA, singleParticleGreenFunction, spectrum, densityofstates, GrandPotential, OrderParameters, DistributionFunction, Clusteration
+export SVCA, spliceLatticeGreenFunction
 
 const vcatimer = TimerOutput()
 """
@@ -43,42 +47,260 @@ function Perioder(unitcell::AbstractLattice, cluster::AbstractLattice, table::Ta
 end
 
 """
+    Clusteration{H<:Hilbert, B<:BinaryBases, T<:Term, E<:Term, O<:Tuple{Vararg{T}}, R<:Tuple{Vararg{E}}}
+
+Cluster information for performing Variational Cluster Approach(VCA) method
+"""
+struct Clusteration{I<:Union{Nothing, AbstractVector{<:Integer}}, R<:Union{Nothing, Tuple{Vararg{Term}}}, M<:Integer}
+    cid::I
+    hilbert::Hilbert
+    bs::BinaryBases
+    neighbors::Union{Nothing, Int, Neighbors}
+    referterms::R
+    m::M
+end
+function Clusteration(hilbert::Hilbert, bs::BinaryBases; cid::Union{Nothing, AbstractVector{<:Integer}}=nothing, referterms::Union{Nothing, Tuple{Vararg{Term}}}=nothing, neighbors::Union{Nothing, Int, Neighbors}=nothing, m::Int=200)
+    return Clusteration(cid, hilbert, bs, neighbors, referterms, m)
+end
+
+struct TDVPSolver <: GFSolver
+    gfrw::AbstractArray{ComplexF64, 3}
+end
+"""
     VCA{L<:AbstractLattice, G<:EDSolver, P<:Perioder} <: Frontend
 
 Variational Cluster Approach(VCA) method for a quantum lattice system.
 """
-mutable struct VCA{L<:AbstractLattice, G<:EDSolver, P<:Perioder, T<:Partition} <: Frontend
+mutable struct VCA{L<:AbstractLattice, C<:AbstractLattice, G<:GFSolver, P<:Perioder} <: Frontend
+    const modelname::Union{String, Nothing}
+    const cachepath::Union{String, Nothing}
     const unitcell::L
-    const cluster::L
+    const cluster::C
     const origigenerator::OperatorGenerator
     const refergenerator::OperatorGenerator
     solver::G
     const perioder::P
-    const parts::T
+    const parts::Union{Partition, Nothing}
 end
 
+function Base.repr(gen::OperatorGenerator; ndecimal::Int=6)
+    result = String[]
+    for (name, value) in pairs(Parameters(gen))
+        push!(result, @sprintf "%s(%s)" name decimaltostr(value, ndecimal))
+    end
+    return @sprintf "%s" join(result, "")
+end
 """
     VCA(sym::Symbol, unitcell::AbstractLattice, cluster::AbstractLattice, hilbert::Hilbert, origiterms::Tuple{Vararg{Term}}, referterms::Tuple{Vararg{Term}}, bs::BinaryBases; neighbors::Union{Nothing, Int, Neighbors}=nothing, m::Int=200)
 
 Construct the Variational Cluster Approach(VCA) method for a quantum lattice system with EDSolver.
 """
-function VCA(sym::Symbol, unitcell::AbstractLattice, cluster::AbstractLattice, hilbert::Hilbert, origiterms::Tuple{Vararg{Term}}, referterms::Tuple{Vararg{Term}}, bs::BinaryBases; neighbors::Union{Nothing, Int, Neighbors}=nothing, m::Int=200)
+function VCA(sym::Symbol, unitcell::AbstractLattice, cluster::AbstractLattice, hilbert::Hilbert, origiterms::Tuple{Vararg{Term}}, referterms::Tuple{Vararg{Term}}, bs::BinaryBases; neighbors::Union{Nothing, Int, Neighbors}=nothing, m::Int=200, modelname::Union{Nothing,String}=nothing, nameonly::Bool=false, cachepath::Union{Nothing, String}=nothing)
     table = Table(hilbert, Metric(EDKind(hilbert), hilbert))
     isnothing(neighbors) && (neighbors = maximum(term->term.bondkind, origiterms))
     origibonds = bonds(cluster, neighbors)
     referbonds = filter(bond -> isintracell(bond), origibonds)
-    perioder = Perioder(unitcell, cluster, table)  
+    perioder = Perioder(unitcell, cluster, table) 
     parts = Partition(sym, table, bs)
     origigenerator, refergenerator = OperatorGenerator(origiterms, origibonds, hilbert; table = table), OperatorGenerator(referterms, referbonds, hilbert; table = table)
-    edsolver = EDSolver(EDKind(hilbert), parts, refergenerator, bs, table; m = m)
-    return VCA(unitcell, cluster, origigenerator, refergenerator, edsolver, perioder, parts)
+    if !isnothing(cachepath)
+        modelname_str = isnothing(modelname) ? "default_model" : modelname
+        if !nameonly
+            cache_file_path = joinpath(cachepath, @sprintf "%s_%s_%s_%s.jls" modelname_str cluster.name repr(refergenerator) EDSolver )
+        else
+            cache_file_path = joinpath(cachepath, @sprintf "%s_%s_%s.jls" modelname_str cluster.name EDSolver)
+        end
+        if isfile(cache_file_path)
+            edsolver = deserialize(cache_file_path)
+            println("Load edsolver from $cache_file_path")
+        else
+            !isdir(cachepath)&& mkdir(cachepath)
+            println("Cache directory created at $cachepath")
+            edsolver = EDSolver(EDKind(hilbert), parts, refergenerator, bs, table; m = m)
+            serialize(cache_file_path, edsolver)
+            println("EDSolver cached at $cache_file_path")
+        end
+    else
+        edsolver = EDSolver(EDKind(hilbert), parts, refergenerator, bs, table; m = m)
+    end
+    return VCA(modelname, cachepath, unitcell, cluster, origigenerator, refergenerator, edsolver, perioder, parts)
 end
+
+function VCA(sym::Symbol, 
+            unitcell::AbstractLattice, 
+            cluster::AbstractLattice, 
+            hilbert::Hilbert, 
+            origiterms::Tuple{Vararg{Term}}, 
+            referterms::Tuple{Vararg{Term}}, 
+            gfrw::AbstractArray{ComplexF64, 3}; 
+            neighbors::Union{Nothing, Int, Neighbors}=nothing, 
+            modelname::Union{Nothing,String}=nothing, 
+            cachepath::Union{Nothing, String}=nothing)
+    table = Table(hilbert, Metric(EDKind(hilbert), hilbert))
+    isnothing(neighbors) && (neighbors = maximum(term->term.bondkind, origiterms))
+    origibonds = bonds(cluster, neighbors)
+    referbonds = filter(bond -> isintracell(bond), origibonds)
+    perioder = Perioder(unitcell, cluster, table) 
+    origigenerator, refergenerator = OperatorGenerator(origiterms, origibonds, hilbert; table = table), OperatorGenerator(referterms, referbonds, hilbert; table = table)
+    tdvpsolver = TDVPSolver(gfrw)
+    return VCA(modelname, cachepath, unitcell, cluster, origigenerator, refergenerator, tdvpsolver, perioder, nothing)
+end
+
+
+function VCA(sym::Symbol, unitcell::AbstractLattice, cluster::AbstractLattice, hilbert::Hilbert, origiterms::Tuple{Vararg{Term}}, referterms::Tuple{Vararg{Term}}, bs::BinaryBases, T::Number, solver::Union{Function, Type}; neighbors::Union{Nothing, Int, Neighbors}=nothing, modelname::Union{Nothing,String}=nothing, cachepath::Union{Nothing, String}=nothing, kwargs...)
+    table = Table(hilbert, Metric(EDKind(hilbert), hilbert))
+    isnothing(neighbors) && (neighbors = maximum(term->term.bondkind, origiterms))
+    origibonds = bonds(cluster, neighbors)
+    referbonds = filter(bond -> isintracell(bond), origibonds)
+    perioder = Perioder(unitcell, cluster, table) 
+    parts = Partition(sym, table, bs)
+    origigenerator, refergenerator = OperatorGenerator(origiterms, origibonds, hilbert; table = table), OperatorGenerator(referterms, referbonds, hilbert; table = table)
+    if !isnothing(cachepath)
+        modelname_str = isnothing(modelname) ? "default_model" : modelname
+        cache_file_path = joinpath(cachepath, @sprintf "%s_%s_%s_%s.jls" modelname_str cluster.name repr(refergenerator) FTEDSolver )
+        if isfile(cache_file_path)
+            ftedsolver = deserialize(cache_file_path)
+            println("Load ftedsolver from $cache_file_path")
+        else
+            !isdir(cachepath)&& mkdir(cachepath)
+            println("Cache directory created at $cachepath")
+            ftedsolver = solver(T, refergenerator, table, bs; kwargs...)
+            serialize(cache_file_path, ftedsolver)
+            println("ftedSolver cached at $cache_file_path")
+        end
+    else
+        ftedsolver = solver(T, refergenerator, table, bs; kwargs...)
+    end
+    return VCA(modelname, cachepath, unitcell, cluster, origigenerator, refergenerator, ftedsolver, perioder, parts)
+end
+
 function update!(vca::VCA, oparams::Parameters, rparams::Parameters)
     update!(vca.origigenerator; oparams...)
     update!(vca.refergenerator; rparams...)
-    vca.solver = EDSolver(EDKind(vca.refergenerator.hilbert), vca.parts, vca.refergenerator, vca.parts.sector, vca.refergenerator.table; m = length(vca.solver.lvals[1].abc[1][1]))
+    cachepath = vca.cachepath
+    modelname = vca.modelname
+    if !isnothing(cachepath)
+        modelname_str = isnothing(modelname) ? "default_model" : modelname
+        cache_file_path = joinpath(cachepath, @sprintf "%s_%s_%s_%s.jls" modelname_str vca.cluster.name  repr(vca.refergenerator) EDSolver )
+        if isfile(cache_file_path)
+            vca.solver = deserialize(cache_file_path)
+            println("Load edsolver from $cache_file_path")
+        else
+            !isdir(cachepath)&& mkdir(cachepath)
+            println("Cache directory created at $cachepath")
+            vca.solver = EDSolver(EDKind(vca.refergenerator.hilbert), vca.parts, vca.refergenerator, vca.parts.sector, vca.refergenerator.table; m = length(vca.solver.lvals[1].abc[1][1]))
+            serialize(cache_file_path, vca.solver)
+            println("EDSolver cached at $cache_file_path")
+        end
+    else
+        vca.solver = EDSolver(EDKind(vca.refergenerator.hilbert), vca.parts, vca.refergenerator, vca.parts.sector, vca.refergenerator.table; m = length(vca.solver.lvals[1].abc[1][1]))
+    end      
     return vca
 end
+
+
+"""
+    SVCA{U<:AbstractLattice, L<:AbstractLattice, C<:AbstractVector{L}, A<:AbstractLattice, G<:EDSolver, E<:AbstractVector{G}, P<:Perioder, T<:Partition, R<:AbstractVector{T}} <: Frontend
+
+Variational Cluster Approach(VCA) method for spliced quantum lattices.
+"""
+mutable struct SVCA{U<:AbstractLattice, L<:AbstractLattice, C<:AbstractVector{L}, A<:AbstractLattice, M<:AbstractVector, G<:EDSolver, E<:AbstractVector{G}, P<:Perioder, T<:Partition, R<:AbstractVector{T}} <: Frontend
+    const modelname::Union{String, Nothing}
+    const cachepath::Union{String, Nothing}
+    const unitcell::U
+    const clusters::C
+    const lattice::A
+    const mapcgf::M
+    const origigenerator::OperatorGenerator
+    const refergenerator::OperatorGenerator
+    solvers::E
+    const perioder::P
+    const partses::R
+end
+
+"""
+    SVCA(sym::Symbol, unitcell::AbstractLattice, clusters::AbstractVector{<:AbstractLattice}, clns::AbstractVector{<:Clusteration}, lvectors::AbstractVector, hilbert::Hilbert, origiterms::Tuple{Vararg{Term}}, referterms::Tuple{Vararg{Term}}; perioder::Union{Perioder, Nothing}=nothing, neighbors::Union{Nothing, Int, Neighbors}=nothing, modelname::Union{Nothing,String}=nothing, cachepath::Union{Nothing, String}=nothing)
+
+Construct the Variational Cluster Approach(VCA) method for spliced quantum lattice systems with EDSolver.
+"""
+function SVCA(sym::Symbol, unitcell::AbstractLattice, clusters::AbstractVector{<:AbstractLattice}, clns::AbstractVector{<:Clusteration}, lvectors::AbstractVector, hilbert::Hilbert, origiterms::Tuple{Vararg{Term}}, referterms::Tuple{Vararg{Term}}; perioder::Union{Perioder, Nothing}=nothing, neighbors::Union{Nothing, Int, Neighbors}=nothing, modelname::Union{Nothing,String}=nothing, cachepath::Union{Nothing, String}=nothing)
+    @assert length(clusters)==sum(length(cln.cid) for cln in clns) "The lengths of clusters and clusterations is inconsistent"
+    table = Table(hilbert, Metric(EDKind(hilbert), hilbert))
+    lattice = Lattice(:lattice, hcat([cluster.coordinates for cluster in clusters]...), QuantumLattices.Spatials.vectorconvert(lvectors))
+    splice = vcat([[i for _ in axes(clusters[i].coordinates, 2)] for i in eachindex(clusters)]...)
+    cids = [cln.cid for cln in clns]
+    temp = [filter(i->j in splice[i], 1:length(splice)) for j in eachindex(clusters)]
+    mapcgf = [[sort(vcat([filter(i-> j in sort(collect(keys(table)), by = x -> table[x])[i][2], 1:length(table)) for j in x]...)) for x in temp], [filter(i->j in cids[i], 1:length(cids))[1] for j in eachindex(clusters)]]
+    isnothing(neighbors) && (neighbors = maximum(term->term.bondkind, origiterms))
+    origibonds = bonds(lattice, neighbors)
+    referbonds = filter(bondd->isintracell(bondd), filter(bbond->isintraclusters(bbond, splice), origibonds))
+    isnothing(perioder) ? (perioder = Perioder(unitcell, lattice, table)) : (perioder = perioder)
+    origigenerator, refergenerator = OperatorGenerator(origiterms, origibonds, hilbert; table = table), OperatorGenerator(referterms, referbonds, hilbert; table = table)
+    partses = Vector{Partition}(undef, length(clns))
+    edsolvers = Vector{EDSolver}(undef, length(clns))
+    for i in eachindex(clns)
+        ctable = Table(clns[i].hilbert, Metric(EDKind(clns[i].hilbert), clns[i].hilbert))
+        isnothing(clns[i].referterms) ? (creferterms=referterms) : (creferterms=clns[i].referterms)
+        isnothing(clns[i].neighbors) ? (cneighbors=neighbors) : (cneighbors=clns[i].neighbors)
+        partses[i] = Partition(sym, ctable, clns[i].bs)
+        creferbonds = filter(bond -> isintracell(bond), bonds(clusters[clns[i].cid[1]], cneighbors))
+        crefergenerator = OperatorGenerator(creferterms, creferbonds, clns[i].hilbert; table = ctable)
+        if !isnothing(cachepath)
+            modelname_str = isnothing(modelname) ? "default_model" : modelname
+            cache_file_path = joinpath(cachepath, @sprintf "%s_%s_%s_%s.jls" modelname_str clns[i].cid repr(crefergenerator) EDSolver )
+            if isfile(cache_file_path)
+                edsolvers[i] = deserialize(cache_file_path)
+                println("Load edsolver from $cache_file_path")
+            else
+                !isdir(cachepath)&& mkdir(cachepath)
+                println("Cache directory created at $cachepath")
+                edsolvers[i] = EDSolver(EDKind(clns[i].hilbert), partses[i], crefergenerator, clns[i].bs, ctable; m = clns[i].m)
+                serialize(cache_file_path, edsolver)
+                println("EDSolver cached at $cache_file_path")
+            end
+        else
+            edsolvers[i] = EDSolver(EDKind(clns[i].hilbert), partses[i], crefergenerator, clns[i].bs, ctable; m = clns[i].m)
+        end
+    end
+    return SVCA(modelname, cachepath, unitcell, clusters, lattice, mapcgf, origigenerator, refergenerator, edsolvers, perioder, partses)
+end
+
+isintraclusters(bond::Bond, splice::AbstractVector{<:Integer}) = all(point-> splice[bond.points[1].site]==splice[point.site] , bond)
+
+function update!(svca::SVCA, oparams::Parameters, rparams::Parameters, clns::AbstractVector{<:Clusteration})
+    update!(svca.origigenerator; oparams...)
+    update!(svca.refergenerator; rparams...)
+    cachepath = svca.cachepath
+    modelname = svca.modelname
+    edsolvers = Vector{EDSolver}(undef, length(clns))
+    for i in eachindex(clns)
+        ctable = Table(clns[i].hilbert, Metric(EDKind(clns[i].hilbert), clns[i].hilbert))
+        creferterms=clns[i].referterms
+        isnothing(clns[i].neighbors) ? (cneighbors = maximum(term->term.bondkind, creferterms)) : (cneighbors=clns[i].neighbors)
+        creferbonds = filter(bond -> isintracell(bond), bonds(svca.clusters[clns[i].cid[1]], cneighbors))
+        crefergenerator = OperatorGenerator(creferterms, creferbonds, clns[i].hilbert; table = ctable)
+        if !isnothing(cachepath)
+            modelname_str = isnothing(modelname) ? "default_model" : modelname
+            cache_file_path = joinpath(cachepath, @sprintf "%s_%s_%s_%s.jls" modelname_str clns[i].cid repr(crefergenerator) EDSolver)
+            if isfile(cache_file_path)
+                edsolvers[i] = deserialize(cache_file_path)
+                println("Load edsolver from $cache_file_path")
+            else
+                !isdir(cachepath)&& mkdir(cachepath)
+                println("Cache directory created at $cachepath")
+                edsolvers[i] = EDSolver(EDKind(clns[i].hilbert), svca.partses[i], crefergenerator, svca.partses[i].sector, ctable; m = clns[i].m)
+                serialize(cache_file_path, edsolver)
+                println("EDSolver cached at $cache_file_path")
+            end
+        else
+            edsolvers[i] = EDSolver(EDKind(clns[i].hilbert), svca.partses[i], crefergenerator, svca.partses[i].sector, ctable; m = clns[i].m)
+        end
+    end
+    svca.solvers = edsolvers
+    return svca
+end
+
+
 """
     origiQuadraticTerms!(normal::Bool, om::AbstractMatrix, oops::AbstractVector, oopsseqs::AbstractVector,k::AbstractVector)
 
@@ -135,6 +357,32 @@ function seqs(oops::AbstractVector, table::Table)
 end
 
 """
+    spliceLatticeGreenFunction(sym::Symbol, vca::VCA, k_path::Union{AbstractVector, ReciprocalSpace}, ω_range::Union{AbstractVector,AbstractRange}; μ::Real=0.0, η::Real=0.05)
+
+The single particle Green function in k-ω space for spliced quantum lattices.
+"""
+function spliceLatticeGreenFunction(sym::Symbol, svca::SVCA, k_path::Union{AbstractVector, ReciprocalSpace}, ω_range::Union{AbstractVector,AbstractRange}; μ::Real=0.0, η::Real=0.05, loc::Union{Nothing, AbstractVector}=nothing)
+    ω_range = ω_range .+ (μ + η*im)
+    oops, rops = filter(op -> length(op) == 2, collect(expand(svca.origigenerator))), filter(op -> length(op) == 2, collect(expand(svca.refergenerator)))
+    R, N = isempty(filter(op -> op.id[1].index.iid.nambu==op.id[2].index.iid.nambu, collect(rops))), length(svca.refergenerator.table)
+    R ? N=N : N=2*N
+    pm = zeros(ComplexF64, size(svca.lattice.coordinates, 2), size(svca.lattice.coordinates, 2))
+    oopsseqs = seqs(oops, svca.origigenerator.table)
+    rm = referQuadraticTerms(R, rops, zeros(ComplexF64, N, N), svca.refergenerator.table)
+    cgfm = zeros(ComplexF64, length(svca.refergenerator.table), length(svca.refergenerator.table))
+    gfpv = Vector{Vector}(undef, length(ω_range))
+    for i in eachindex(ω_range)
+        fill!(cgfm, 0)
+        cgfv = [ClusterGreenFunction(R, sym, svca.solvers[k], ω_range[i]) for k in eachindex(svca.solvers)]
+        for j in eachindex(svca.mapcgf[1])
+            cgfm[svca.mapcgf[1][j], svca.mapcgf[1][j]] = cgfv[svca.mapcgf[2][j]]
+        end
+        gfpv[i] = GreenFunctionPath(R, zeros(ComplexF64, N, N),  oops, oopsseqs, rm, svca.perioder, svca.lattice, k_path, cgfm; loc=loc)
+    end
+    return gfpv
+end
+
+"""
     CPTcore(cgfm::AbstractMatrix, vm::AbstractMatrix)
 
 The calculating core of the CPT method.
@@ -164,6 +412,7 @@ function perGreenFunction(normal::Bool, GFm::AbstractMatrix, k::AbstractVector, 
     normal ? (gfm = gfmv[1]) : (gfm = [gfmv[1] gfmv[2]; gfmv[3] gfmv[4]])
     return gfm
 end
+
 function periodmatrix(coordinates::AbstractMatrix, k::AbstractVector)
     L = size(coordinates,2)
     pm = Matrix{ComplexF64}(undef, L, L)
@@ -197,29 +446,70 @@ end
 
 Give the Green function of a certain path or area in k-space with respect to a certain energy.
 """
-function GreenFunctionPath(normal::Bool, om::AbstractMatrix, oops::AbstractVector, oopsseqs::AbstractVector, rm::AbstractMatrix, perioder::Perioder, cluster::AbstractLattice, k_path::Union{AbstractVector, ReciprocalSpace}, CGFm::AbstractMatrix)
+function GreenFunctionPath(normal::Bool, om::AbstractMatrix, oops::AbstractVector, oopsseqs::AbstractVector, rm::AbstractMatrix, perioder::Perioder, cluster::AbstractLattice, k_path::Union{AbstractVector, ReciprocalSpace}, CGFm::AbstractMatrix; loc::Union{Nothing, AbstractVector}=nothing)
     gfpath = Vector{Matrix{ComplexF64}}(undef, length(k_path))
-    for i in eachindex(k_path)
-        dest = copy(om)
-        Vm = origiQuadraticTerms!(normal, dest, oops, oopsseqs, k_path[i]) - rm
-        gfpath[i] = perGreenFunction(normal, CPTcore(CGFm, Vm), k_path[i], perioder, cluster)
+    if isnothing(loc)
+        for i in eachindex(k_path)
+            dest = copy(om)
+            Vm = origiQuadraticTerms!(normal, dest, oops, oopsseqs, k_path[i]) - rm
+            gfpath[i] = perGreenFunction(normal, CPTcore(CGFm, Vm), k_path[i], perioder, cluster)
+        end
+    else
+        for i in eachindex(k_path)
+            dest = copy(om)
+            Vm = origiQuadraticTerms!(normal, dest, oops, oopsseqs, k_path[i]) - rm
+            gfpath[i] = CPTcore(CGFm, Vm)[loc, loc]
+        end
     end
     return gfpath
 end 
 
 """
-    singleParticleGreenFunction(sym::Symbol, vca::VCA, k_path::Union{AbstractVector, ReciprocalSpace}, ω_range::Union{AbstractVector,AbstractRange}; μ::Real=0.0, η::Real=0.05)
+    singleParticleGreenFunction(sym::Symbol, vca::VCA, k_path::Union{AbstractVector, ReciprocalSpace}, ω_range::Union{AbstractVector,AbstractRange}; μ::Real=0.0, η::Real=0.05, dstr::Bool=false)
 
 The single particle Green function in k-ω space.
 """
-function singleParticleGreenFunction(sym::Symbol, vca::VCA, k_path::Union{AbstractVector, ReciprocalSpace}, ω_range::Union{AbstractVector,AbstractRange}; μ::Real=0.0, η::Real=0.05)
+function singleParticleGreenFunction(sym::Symbol, vca::VCA, k_path::Union{AbstractVector, ReciprocalSpace}, ω_range::Union{AbstractVector,AbstractRange}; mthreads::Integer=Threads.nthreads(), μ::Real=0.0, η::Real=0.05, loc::Union{Nothing, AbstractVector}=nothing)
     ω_range = ω_range .+ (μ + η*im)
     oops, rops = filter(op -> length(op) == 2, collect(expand(vca.origigenerator))), filter(op -> length(op) == 2, collect(expand(vca.refergenerator)))
     R, N = isempty(filter(op -> op.id[1].index.iid.nambu==op.id[2].index.iid.nambu, collect(rops))), length(vca.refergenerator.table)
     R ? N=N : N=2*N
     oopsseqs = seqs(oops, vca.origigenerator.table)
     rm = referQuadraticTerms(R, rops, zeros(ComplexF64, N, N), vca.refergenerator.table)
-    gfpv = [GreenFunctionPath(R, zeros(ComplexF64, N, N), oops, oopsseqs, rm, vca.perioder, vca.cluster, k_path, ClusterGreenFunction(R, sym, vca.solver, ω)) for ω in ω_range]
+    gfpv = Vector(undef, length(ω_range))
+    if isa(vca.solver, TDVPSolver)
+        if mthreads == 1
+            for (i, ω) in enumerate(ω_range)
+                gfpv[i] = GreenFunctionPath(R, zeros(ComplexF64, N, N), oops, oopsseqs, rm, vca.perioder, vca.cluster, k_path, vca.solver.gfrw[:,:,i]; loc=loc)
+            end
+        else
+            idx = Threads.Atomic{Int}(1)
+            n = length(ω_range)
+            Threads.@sync for _ in 1:mthreads
+                Threads.@spawn while true
+                    i = Threads.atomic_add!(idx, 1)  
+                    i > n && break  
+                    gfpv[i] = GreenFunctionPath(R, zeros(ComplexF64, N, N), oops, oopsseqs, rm, vca.perioder, vca.cluster, k_path, vca.solver.gfrw[:,:,i]; loc=loc)
+                end
+            end
+        end
+    else
+        if mthreads == 1
+            for (i, ω) in enumerate(ω_range)
+                gfpv[i] = GreenFunctionPath(R, zeros(ComplexF64, N, N), oops, oopsseqs, rm, vca.perioder, vca.cluster, k_path, ClusterGreenFunction(R, sym, vca.solver, ω); loc=loc)
+            end
+        else
+            idx = Threads.Atomic{Int}(1)
+            n = length(ω_range)
+            Threads.@sync for _ in 1:mthreads
+                Threads.@spawn while true
+                    i = Threads.atomic_add!(idx, 1)  
+                    i > n && break  
+                    gfpv[i] = GreenFunctionPath(R, zeros(ComplexF64, N, N), oops, oopsseqs, rm, vca.perioder, vca.cluster, k_path, ClusterGreenFunction(R, sym, vca.solver, ω_range[i]); loc=loc)
+                end
+            end
+        end
+    end
     return gfpv
 end
 
@@ -228,14 +518,27 @@ end
 
 The spectrum of the single particle Green function.
 """
-function spectrum(gfpathv::AbstractVector)
+function spectrum(gfpathv::AbstractVector; select::AbstractVector=Vector(1:size(gfpathv[1][1],2)))
     A = zeros(Float64, length(gfpathv), length(gfpathv[1]))
         for i in eachindex(gfpathv)
             for j in eachindex(gfpathv[i])
-                A[i, j] = (-1/π) * (tr(gfpathv[i][j])).im
+                A[i, j] = (-1/π) * (tr(gfpathv[i][j][select, select])).im
             end
         end
         return A
+end
+
+"""
+    Density of states
+"""
+function densityofstates(gfpathv::AbstractVector; select::AbstractVector=Vector(1:size(gfpathv[1][1],2)))
+    A = zeros(Float64, length(gfpathv))
+    for i in eachindex(gfpathv)
+        for j in eachindex(gfpathv[i])
+            A[i] += (-1/π) * (tr(gfpathv[i][j][select, select])).im
+        end
+    end
+    return A/length(gfpathv[1])
 end
 
 """
@@ -310,21 +613,82 @@ function OPintegrand(normal::Bool, sym::Symbol, vca::VCA, bz::ReciprocalSpace, i
 end
 
 """
-    OrderParameters(sym::Symbol, opt::Optimal, hilbert::Hilbert, bz::ReciprocalSpace, term::Term, μ::Real)
+    OrderParameters(oparams::Parameters, rparams::Parameters, sym::Symbol, vca::VCA, hilbert::Hilbert, bz::ReciprocalSpace, term::Term, μ::Real)
 
 Calculate the order parameter.
 """
-function OrderParameters(oparams::Parameters, rparams::Parameters, sym::Symbol, vca::VCA, hilbert::Hilbert, bz::ReciprocalSpace, term::Term, μ::Real)
-    update!(vca, oparams, rparams)
+function OrderParameters(sym::Symbol, vca::VCA, bz::ReciprocalSpace, opterms::Tuple, μ::Real)
     rops = filter(op -> length(op) == 2, collect(expand(vca.refergenerator)))
     R, N = isempty(filter(op -> op.id[1].index.iid.nambu==op.id[2].index.iid.nambu, collect(rops))), length(vca.refergenerator.table)
     R ? N=N : N=2*N
-    term.value = convert(typeof(term.value), 1.0)
-    sm = referQuadraticTerms(R, collect(expand(term, filter(bond -> isintracell(bond), bonds(vca.cluster, term.bondkind)), hilbert)), zeros(ComplexF64, N, N), vca.refergenerator.table)
+    if isempty(opterms)
+        sm = Matrix{ComplexF64}(I, N, N)
+    else
+        [update!(term; Parameters{(id(term),)}(1.0)...) for term in opterms]
+        opgenerator = OperatorGenerator(opterms, filter(bond -> isintracell(bond), bonds(vca.cluster, opterms[1].bondkind)), vca.refergenerator.hilbert; table = vca.refergenerator.table)
+        sm = referQuadraticTerms(R, collect(expand(opgenerator)), zeros(ComplexF64, N, N), vca.refergenerator.table)
+    end
     oops = filter(op -> length(op) == 2, collect(expand(vca.origigenerator)))
     oopsseqs = seqs(oops, vca.origigenerator.table)
     rm = referQuadraticTerms(R, rops, zeros(ComplexF64, N, N), vca.refergenerator.table)
     return abs((1/length(bz))*quadgk(x -> OPintegrand(R, sym, vca, bz, x*im, sm, oops, oopsseqs, rm, μ), 0, Inf)[1]/π/length(vca.unitcell)/length(vca.cluster))
 end
+
+function OrderParameters(oparams::Parameters, rparams::Parameters, sym::Symbol, vca::VCA, bz::ReciprocalSpace, opterms::Tuple{Vararg{Term}}, μ::Real)
+    update!(vca, oparams, rparams)
+    return OrderParameters(sym, vca, bz, opterms, μ)
+end
+
+function Disintegrand(sym::Symbol, vca::VCA, k::AbstractVector, iω::Complex, μ::Real, select::Union{Nothing, AbstractVector})
+    gfm = singleParticleGreenFunction(sym, vca, [k,], [iω,]; η=0.0, μ=μ)[1][1]
+    select==nothing ? gfm=gfm : gfm=gfm[select, select]
+    intra = (tr(gfm) - size(gfm,1)/(iω-1.0)).re
+    return intra
+end
+
+function DistributionFunction(sym::Symbol, vca::VCA, bz::ReciprocalSpace, μ::Real; select::Union{Nothing, AbstractVector}=nothing)
+    ds = zeros(Float64, length(bz))
+    for i in eachindex(bz)
+        ds[i] = quadgk(x -> Disintegrand(sym, vca, bz[i], x*im, μ, select), 0, Inf)[1]/π
+    end
+    return ds
+end
+
+function delta_scattering_QPI(sym::Symbol, vca::VCA, k_path::Union{AbstractVector, ReciprocalSpace}, ω::Number, V::Number; select::Union{Nothing, AbstractVector}=nothing, μ::Real=0.0, η::Real=0.05, loc::Union{Nothing, AbstractVector}=nothing)
+    ω = ω + μ + η*im
+    oops, rops = filter(op -> length(op) == 2, collect(expand(vca.origigenerator))), filter(op -> length(op) == 2, collect(expand(vca.refergenerator)))
+    R, N = isempty(filter(op -> op.id[1].index.iid.nambu==op.id[2].index.iid.nambu, collect(rops))), length(vca.refergenerator.table)
+    R ? N=N : N=2*N
+    oopsseqs = seqs(oops, vca.origigenerator.table)
+    rm = referQuadraticTerms(R, rops, zeros(ComplexF64, N, N), vca.refergenerator.table)
+    gfpv = GreenFunctionPath(R, zeros(ComplexF64, N, N),  oops, oopsseqs, rm, vca.perioder, vca.cluster, k_path, ClusterGreenFunction(R, sym, vca.solver, ω); loc=loc)
+    ivm = Matrix{ComplexF64}(I, size(gfpv[1])...)/V
+    gvs = [gf*inv(ivm-gf) for gf in gfpv]
+    rs = zeros(Float64, length(gfpv))
+    ms = Momenta(Momentum₂{Int(√(length(k_path))), Int(√(length(k_path)))})
+    select==nothing ? select=Vector(1:size(gvs[1],2)) : select=select
+    for q in eachindex(gfpv) 
+        for k in eachindex(gfpv)
+            rs[q] += (-1/π)*tr((gvs[k]*gfpv[findfirst(ms[k]+ms[q],ms)])[select, select]).im
+        end
+    end
+    return rs
+end
+
+const δ_QPI = delta_scattering_QPI
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 end #module
